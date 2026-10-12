@@ -6,10 +6,10 @@
 
 ## 先准备
 
-1. 在 DuckDNS 新建一个与现有应用不同的子域名，把 IPv4 更新为服务器公网 IP `47.106.109.59`。例如 `your-new-name.duckdns.org`；下面所有 `__DOMAIN__` 都换成你实际申请的完整域名。服务器固定公网 IP 时无需安装 DuckDNS 自动更新脚本。
-2. 查出你**当前访问网站的设备**的公网 IPv4，填入 `__YOUR_PUBLIC_IP__`（只写 IPv4，模板已含 `/32`）。若需要从多个固定网络访问，可在 `deny all;` 前增加多条 `allow IP/32;`。手机流量/家庭网络 IP 变化后，先通过 SSH 更新 Nginx 白名单。
+1. 截图里的 `sz-yiban.duckdns.org` 仍是原应用域名。若原应用继续使用它，请在 DuckDNS **新增一行**不同的子域名，把新域名的 IPv4 更新为服务器公网 IP `47.106.109.59`；私网 IP `172.17.23.205` 不填，IPv6 没有配置则留空。例如 `your-new-name.duckdns.org`；下面所有 `__DOMAIN__` 都换成实际新申请的完整域名。服务器固定公网 IP 时无需安装 DuckDNS 自动更新脚本。
+2. 查出你**打开网站的电脑或手机所在网络**的出口公网 IPv4，填入 `__YOUR_PUBLIC_IP__`（只写 IPv4，模板已含 `/32`）。它不是服务器公网 IP `47.106.109.59`，也不是服务器私网 IP `172.17.23.205`。若需要从多个固定网络访问，可在 `deny all;` 前增加多条 `allow IP/32;`。手机流量/家庭网络 IP 变化后，先通过 SSH 更新 Nginx 白名单。
 3. 确认云平台安全组允许 TCP 80、443；服务器上它们已被 Nginx 使用，保留原状。SSH 22 按现有配置。SSH 认证目前未从本机成功，以下命令须在你能够登录的服务器终端执行。
-4. 记录当前 Nginx 配置位置。以下按 Ubuntu 常见 `/etc/nginx/sites-available` 和 `sites-enabled` 写；若是宝塔管理的 Nginx，以实际 `nginx -T` 输出为准，**不要覆盖原站点配置**。
+4. 记录当前 Nginx 配置位置。以下按 Ubuntu 常见 `/etc/nginx/sites-available` 和 `sites-enabled` 写；若是宝塔管理的 Nginx，须在面板里给**新域名新增独立站点**，按模板设置反向代理与证书，并以实际 `nginx -T` 输出为准。**不要覆盖原站点配置，也不要另外安装第二套 Nginx。**
 
 ## 1. 拉代码和安装后端
 
@@ -41,7 +41,7 @@ nginx -t && systemctl reload nginx
 certbot certonly --webroot -w /var/www/letsencrypt -d "$APP_DOMAIN"
 ```
 
-如果 `sites-available`/`sites-enabled` 不存在，请根据 `nginx -T` 所示目录创建**单独的新站点配置**，并避免重复 include；不要直接执行上述写入和软链接两行。`getent` 结果应指向 `47.106.109.59`。证书申请必须在 DNS 生效、80 端口可从公网访问之后执行。Certbot 申请证书时，网站在此域名的普通路径暂时返回 404，原有域名不受这个站点文件影响。
+如果 `sites-available`/`sites-enabled` 不存在，请根据 `nginx -T` 所示目录创建**单独的新站点配置**，并避免重复 include；不要直接执行上述写入和软链接两行，且第 3 节的最终配置也要写到这个新站点的实际路径。`getent` 结果应指向 `47.106.109.59`。证书申请必须在 DNS 生效、80 端口可从公网访问之后执行。Certbot 申请证书时，网站在此域名的普通路径暂时返回 404，原有域名不受这个站点文件影响。
 
 ## 3. 配置开机自启与 HTTPS 转发
 
@@ -69,10 +69,9 @@ systemctl status student-score --no-pager
 journalctl -u student-score -n 80 --no-pager
 ss -lntp | grep ':8000'
 nginx -t
-curl -I "https://$APP_DOMAIN/"
 ```
 
-`ss` 应只显示 `127.0.0.1:8000`。在白名单 IP 的浏览器打开 `https://你的新域名/`；其他 IP 应得到 403。`/api/health` 可用于检查服务，但不要在公开日志中粘贴完整学生数据。若域名返回 502，先查 `journalctl`；返回 403，先核对 `MY_PUBLIC_IP`；证书错误，核对 DNS 和 Certbot 签发结果。可用 `certbot renew --dry-run` 检查续签（需确保系统已安装 Certbot 定时续签服务）。
+`ss` 应只显示 `127.0.0.1:8000`。在白名单 IP 的浏览器打开 `https://你的新域名/`，应能打开首页；其他 IP 应得到 403。服务器自身用新域名请求时，也可能因不在白名单而得到 403，这并不代表服务故障。`/api/health` 可用于检查服务，但不要在公开日志中粘贴完整学生数据。若允许访问的设备返回 502，先查 `journalctl`；返回 403，先核对 `MY_PUBLIC_IP`；证书错误，核对 DNS 和 Certbot 签发结果。可用 `certbot renew --dry-run` 检查续签（需确保系统已安装 Certbot 定时续签服务）。
 
 ## 5. 迁移真实数据库（可选，始终走私下传输）
 
