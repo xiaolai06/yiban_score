@@ -1,0 +1,46 @@
+/* Historical exception component. All scrolling remains inside the dialog. */
+dialog.issue-dialog{width:min(1180px,calc(100vw - 32px));max-width:calc(100vw - 32px);max-height:calc(100dvh - 40px);padding:0;overflow:hidden;overscroll-behavior:contain;border-radius:18px}
+dialog.issue-dialog[open]{display:flex;flex-direction:column}
+.issue-dialog .dialog-header{flex-shrink:0;padding:22px 24px;align-items:flex-start}
+.issue-dialog .dialog-header h2{font-size:24px}
+.issue-dialog .dialog-header p{font-size:14px;line-height:1.7;color:var(--muted)}
+.issue-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:18px 24px 14px;flex-shrink:0}
+.issue-toolbar>.search-box{flex:1;min-width:220px}
+.issue-toolbar>.custom-select{flex:0 0 165px;min-width:0}
+.issue-dialog .issue-export{margin-left:0}
+.issue-dialog .issue-export .export-popover{max-width:calc(100vw - 52px)}
+.issue-summary{padding:0 24px 15px;font-size:14px;font-weight:650;color:#304b70;flex-shrink:0}
+.issue-summary>span{display:block;margin-top:5px;font-size:12px;font-weight:500;color:#53667f;line-height:1.7}
+.issue-dialog-content{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#bdcce4 transparent;border-top:1px solid var(--line)}
+.issue-dialog-content>.empty{min-height:190px}
+.issue-dialog .issue-table{font-size:14px}
+.issue-dialog .issue-table th,.issue-dialog .issue-table td{padding:14px 16px}
+.issue-dialog .issue-table .issue-reasons{min-width:220px;max-width:340px;white-space:normal;line-height:1.7}
+.issue-badges{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px}
+.issue-reasons p{font-size:13px;line-height:1.8;overflow-wrap:anywhere}
+.issue-original{min-width:130px;max-width:220px;white-space:normal;overflow-wrap:anywhere}
+.issue-detail{border-top:1px solid #cfdbee;background:#f8faff;margin-top:12px}
+.issue-detail .card-header{flex-wrap:wrap;padding:18px 24px}
+.issue-detail .card-header h3{font-size:18px}
+.issue-detail .history-tools{margin-left:auto}
+.issue-dialog .dialog-footer{padding:16px 24px;flex-shrink:0;justify-content:space-between;flex-wrap:wrap}
+.issue-dialog .dialog-footer>.small-muted{max-width:720px}
+@media(max-width:600px){
+  dialog.issue-dialog{width:calc(100vw - 20px);max-width:calc(100vw - 20px);max-height:calc(100dvh - 24px);border-radius:14px}
+  .issue-dialog .dialog-header{padding:18px;gap:10px}
+  .issue-dialog .dialog-header h2{font-size:22px}
+  .issue-dialog .dialog-header p{font-size:13px}
+  .issue-toolbar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:14px 18px;gap:9px}
+  .issue-toolbar>.search-box{grid-column:1/-1;min-width:0}
+  .issue-toolbar>.custom-select{grid-column:1/-1;min-width:0}
+  .issue-toolbar .btn{width:100%;padding:9px 10px}
+  .issue-summary{padding:0 18px 13px;font-size:13px}
+  .issue-detail .card-header{padding:17px 18px}
+  .issue-detail .history-tools{margin-left:0;width:100%;justify-content:space-between}
+  .issue-dialog .dialog-footer{padding:14px 18px;gap:9px}
+  .issue-dialog .dialog-footer>.btn{margin-left:auto;min-width:95px}
+}
+@media(max-height:600px){
+  dialog.issue-dialog[open]{display:block;overflow:auto}
+  .issue-dialog-content{overflow:visible}
+}

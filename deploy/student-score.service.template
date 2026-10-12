@@ -1,0 +1,23 @@
+[Unit]
+Description=Student Score Site
+After=network.target
+
+[Service]
+Type=simple
+User=student-score
+Group=student-score
+WorkingDirectory=/opt/student-score-site
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=STUDENT_PUBLIC_HOST=__DOMAIN__
+ExecStart=/opt/student-score-site/.venv/bin/python /opt/student-score-site/run.py --port 8000 --db /var/lib/student-score/students.sqlite3
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/student-score
+
+[Install]
+WantedBy=multi-user.target

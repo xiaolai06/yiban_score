@@ -1,0 +1,14 @@
+# First stage: install this HTTP-only site before requesting a certificate.
+# Replace __DOMAIN__ with the new DuckDNS hostname for this app.
+server {
+    listen 80;
+    server_name __DOMAIN__;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/letsencrypt;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location / { return 404; }
+}

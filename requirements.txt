@@ -1,0 +1,4 @@
+# Tested in this delivery environment. No Node.js / Excel / MySQL is needed.
+fastapi==0.128.2
+uvicorn==0.48.0
+python-multipart==0.0.29
