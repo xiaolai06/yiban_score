@@ -31,6 +31,7 @@ PREVIEW_TTL = 3600
 # A missing or unsettled grade belongs in the unqualified roster, without
 # manufacturing a numerical zero or altering the effective-score average.
 UNQUALIFIED_SQL = "(s.score_rate IS NULL OR s.status IN ('未开始','进行中') OR s.score_rate < 90)"
+VALID_SCORE_SQL = "(typeof(s.score_rate) IN ('integer','real') AND s.score_rate BETWEEN 0 AND 100 AND s.status NOT IN ('未开始','进行中'))"
 
 class PreviewInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -213,14 +214,15 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         return meta, read_workbook(path.read_bytes(), meta['filename'])
 
     def stats_data(con) -> dict:
-        row = dict(con.execute('''SELECT COUNT(*) AS students,
+        row = dict(con.execute(f'''SELECT COUNT(*) AS students,
             COUNT(DISTINCT s.class_id) AS classes, COUNT(DISTINCT c.college_id) AS colleges,
             COUNT(CASE WHEN s.score_rate >= 90 THEN 1 END) AS qualified,
-            COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN s.status NOT IN ('未开始','进行中') THEN s.score_rate END) AS settled, ROUND(AVG(CASE WHEN s.status NOT IN ('未开始','进行中') THEN s.score_rate END),2) AS average_rate
+            COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled, ROUND(AVG(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END),2) AS average_rate
             FROM students s JOIN classes c ON c.id=s.class_id''').fetchone())
         counts = {r['status']: r['count'] for r in con.execute('SELECT status,COUNT(*) AS count FROM students GROUP BY status')}
         row['statuses'] = [{'status': x, 'count': counts.get(x, 0)} for x in STATUSES]
         row['revision'] = revision(con)
+        row['valid_scores'] = row['settled']
         last_import = con.execute('SELECT * FROM import_batches ORDER BY id DESC LIMIT 1').fetchone()
         row['last_import'] = dict(last_import) if last_import else None
         return row
@@ -236,11 +238,11 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
     def stats():
         with connection(db_path) as con:
             result = stats_data(con)
-            result['colleges_detail'] = [dict(r) for r in con.execute('''
+            result['colleges_detail'] = [dict(r) for r in con.execute(f'''
                 SELECT co.id, co.name, COUNT(s.student_id) AS students,
-                       COUNT(DISTINCT c.id) AS classes, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN s.status NOT IN ('未开始','进行中') THEN s.score_rate END) AS settled,
+                       COUNT(DISTINCT c.id) AS classes, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled,
                        COUNT(CASE WHEN s.score_rate >= 90 THEN 1 END) AS qualified,
-                       ROUND(AVG(CASE WHEN s.status NOT IN ('未开始','进行中') THEN s.score_rate END),2) AS average_rate
+                       ROUND(AVG(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END),2) AS average_rate
                 FROM colleges co JOIN classes c ON c.college_id=co.id
                 JOIN students s ON s.class_id=c.id GROUP BY co.id
                 ORDER BY students DESC, co.id''')]
@@ -543,12 +545,13 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         where, params = build_filter(q, college_id, class_id, status, score_filter)
         with connection(db_path) as con:
             con.execute('BEGIN')
-            aggregate = dict(con.execute('''SELECT COUNT(*) AS total, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN s.status NOT IN ('未开始','进行中') THEN s.score_rate END) AS settled,
-                COUNT(CASE WHEN s.status NOT IN ('未开始','进行中') AND s.score_rate > 90 THEN 1 END) AS qualified,
-                COUNT(CASE WHEN s.status NOT IN ('未开始','进行中') AND s.score_rate = 90 THEN 1 END) AS at_90,
-                ROUND(AVG(CASE WHEN s.status NOT IN ('未开始','进行中') THEN s.score_rate END),2) AS average_rate FROM students s
+            aggregate = dict(con.execute(f'''SELECT COUNT(*) AS total, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled,
+                COUNT(CASE WHEN {VALID_SCORE_SQL} AND s.score_rate > 90 THEN 1 END) AS qualified,
+                COUNT(CASE WHEN {VALID_SCORE_SQL} AND s.score_rate = 90 THEN 1 END) AS at_90,
+                ROUND(AVG(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END),2) AS average_rate FROM students s
                 JOIN classes c ON c.id=s.class_id''' + where, params).fetchone())
             total = aggregate['total']
+            aggregate['valid_scores'] = aggregate['settled']
             # Every remaining student lacks a settled score or scores below 90.
             # A settled score of exactly 90 remains separate from both groups.
             aggregate['below_90'] = total - aggregate['qualified'] - aggregate['at_90']

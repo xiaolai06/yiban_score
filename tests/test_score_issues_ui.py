@@ -193,3 +193,35 @@ def test_short_viewport_keeps_all_dialog_content_reachable(browser, ui_url, widt
         assert page.evaluate('scrollY') == background_scroll
     finally:
         page.close()
+
+
+def test_issue_refresh_retains_people_search_and_scroll(browser, ui_url):
+    page = browser.new_page(viewport={'width': 1440, 'height': 900})
+    pending = []
+    try:
+        save_extra(page, ui_url, [[f'STABLE{i:03}', '完整显示的异常学生姓名', '已完成', 80] for i in range(25)])
+        page.goto(ui_url + '/#score-import')
+        page.locator('[data-action="score-issues-open"]').click()
+        page.locator('#issue-search').fill('STABLE')
+        playwright.expect(page.locator('[data-person-key]')).to_have_count(20)
+        page.evaluate("""() => { window.savedIssue = {
+            table: document.querySelector('.issue-table-scroll table'),
+            row: document.querySelector('[data-person-key]'),
+            search: document.querySelector('#issue-search'),
+            content: document.querySelector('.issue-dialog-content')
+        }; savedIssue.content.scrollTop = 120; }""")
+        page.route('**/api/scores/issues?*', lambda route: pending.append(route))
+        page.locator('[data-action="issue-refresh"]').click()
+        playwright.expect(page.locator('.issue-table-scroll')).to_have_attribute('aria-busy', 'true')
+        playwright.expect(page.locator('[data-person-key]')).to_have_count(20)
+        assert page.evaluate("""() => savedIssue.table === document.querySelector('.issue-table-scroll table') &&
+            savedIssue.row === document.querySelector('[data-person-key]') &&
+            savedIssue.search === document.querySelector('#issue-search') &&
+            savedIssue.content.scrollTop === 120""")
+        assert pending
+        for route in pending:
+            route.continue_()
+        playwright.expect(page.locator('.issue-table-scroll')).to_have_attribute('aria-busy', 'false')
+        assert page.locator('.issue-person-name b').first.evaluate("el => parseFloat(getComputedStyle(el).fontSize)") >= 18
+    finally:
+        page.close()

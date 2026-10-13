@@ -6,7 +6,7 @@ export const selectedStudentCount=S=>S.exportAllStudents?Math.max(0,S.selectedSt
 export const studentIsChecked=(S,id)=>S.exportAllStudents?!S.exportExcludedStudents.has(id):S.exportStudents.has(id);
 
 export function installDirectoryController(S,{render,loadStudents,toast}) {
-  let frame=0,observer=null;
+  let frame=0,observer=null,resizeTimer;
   const allIds=()=>S.hierarchy.flatMap(co=>co.classes.map(cl=>cl.id));
   function clearScope() {S.exportAll=false;S.exportClasses.clear();}
   function toggleScope(kind,id) {
@@ -53,7 +53,12 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
   function scheduleFit() {
     cancelAnimationFrame(frame);
     frame=requestAnimationFrame(()=>{
-      if(S.view!=='scores'||S.pageMode!=='auto')return;
+      if(S.view!=='scores'||S.pageMode!=='auto'||S.listLoading)return;
+      if(fitPageSize())loadStudents();
+    });
+  }
+  function fitPageSize() {
+      if(S.view!=='scores'||S.pageMode!=='auto')return false;
       const area=document.querySelector('.score-table-scroll'),table=area?.querySelector('table');
       if(!area||!table)return;
       const header=table.querySelector('thead').getBoundingClientRect().height;
@@ -63,11 +68,11 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
       if(capacity!==S.filters.page_size){
         const anchor=(S.filters.page-1)*S.filters.page_size;
         S.filters.page_size=capacity;S.filters.page=Math.floor(anchor/capacity)+1;
-        loadStudents();
+        return true;
       }
-    });
+      return false;
   }
-  window.addEventListener('resize',scheduleFit);
+  window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(scheduleFit,120);});
   function applyScope(payload) {
     if(S.exportAll)payload.all_students=true;
     else if(S.exportClasses.size)payload.class_ids=Array.from(S.exportClasses);
@@ -80,7 +85,7 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
     else payload.student_ids=Array.from(S.exportStudents);
   }
   async function exportScores(mode='scope') {
-    if(S.exportBusy)return;
+    if(S.exportBusy||S.listLoading||S.listError)return;
     const payload={all_students:false,college_ids:[],class_ids:[],below_90:mode==='below'};
     if(mode==='students'){
       if(!selectedStudentCount(S)){toast('请勾选学生，或使用表头全选当前筛选的全部学生。',true);return;}
@@ -117,5 +122,5 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
     } catch(error){toast(error.message||'无法连接服务，导出失败。',true);}
     finally {S.exportBusy=false;render();}
   }
-  return {toggleScope,clearScope,toggleStudent,toggleAllStudents,clearStudentSelection,afterRender,exportScores};
+  return {toggleScope,clearScope,toggleStudent,toggleAllStudents,clearStudentSelection,afterRender,exportScores,fitPageSize};
 }

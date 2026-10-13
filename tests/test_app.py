@@ -134,6 +134,32 @@ def test_template_excel_and_leading_zero():
     assert sheets[0].cell(2,0).text()=='000000002'
 
 
+def test_valid_score_counts_exclude_missing_and_unfinished_values(client):
+    add(client, [
+        row('VALID001', rate=80, status='已完成'),
+        row('VALID002', rate=0, status='已完成'),
+        row('VALID003', rate=None, status='已完成'),
+        row('VALID004', rate=None, status='待录入'),
+        row('VALID005', rate=0, status='未开始'),
+        row('VALID006', rate=20, status='进行中'),
+        row('VALID007', rate=None, status='免考'),
+        row('VALID008', rate=90.5, status='已录入'),
+    ])
+    stats = client.get('/api/stats').json()
+    assert stats['recorded'] == 5
+    assert stats['valid_scores'] == stats['settled'] == 3
+    assert stats['average_rate'] == 56.83
+    for page in (1, 2):
+        result = client.get('/api/students', params={'page_size': 1, 'page': page}).json()
+        assert len(result['items']) == 1
+        assert result['valid_scores'] == result['settled'] == 3
+        assert result['average_rate'] == 56.83
+    for status in ('未开始', '进行中', '待录入', '免考'):
+        result = client.get('/api/students', params={'status': status}).json()
+        assert result['valid_scores'] == 0
+        assert result['average_rate'] is None
+
+
 def test_three_level_hierarchy_and_same_names(client):
     add(client,[row(),row('000002'),row('000003',college='示例学院B')])
     stats=client.get('/api/stats').json()

@@ -1,7 +1,7 @@
 import {newScoreState} from './score_views.js';
 import {installScoreController} from './score_controller.js';
 import {h, icon} from './components.js';
-import {mountHTML} from './safe_dom.js';
+import {mountHTML, updateHTML} from './safe_dom.js';
 import {shell, renderView, editDialog} from './views.js';
 import {enhanceControls, closeControl, captureControl, restoreControl} from './custom_controls.js';
 import {installDirectoryController, DIRECTORY_UPDATE_MESSAGE} from './directory_controller.js';
@@ -18,7 +18,7 @@ const S = {
   stats:{...emptyStats},hierarchy:[],history:[],health:null,
   upload:null,sheetIndex:0,headerRow:1,headerDraft:null,mapping:{},mode:'update',preview:null,committed:null,allowNames:false,
   score:newScoreState(),
-  busy:false,importError:'',filters:defaultFilters(),students:{...emptyList},listLoading:false,listError:'',
+  busy:false,importError:'',filters:defaultFilters(),students:{...emptyList},studentsLoaded:false,listLoading:false,listError:'',listContext:'',
   openColleges:new Set(),treeSearch:'',editing:null,saving:false,ready:false,
   pageMode:'auto',exportClasses:new Set(),exportAll:false,exportBusy:false,
   exportStudents:new Set(),exportAllStudents:false,exportExcludedStudents:new Set(),exportStudentFilter:null,selectedStudentTotal:0,
@@ -26,6 +26,9 @@ const S = {
   overviewSort:{key:'students',order:'desc'},overviewError:'',
 };
 let toastTimer, searchTimer, treeTimer, listSequence=0;
+let renderedView=null,listAbort=null;
+const studentCache=new Map();
+const CACHE_TTL=15000;
 
 async function api(path, options={}) {
   const headers = new Headers(options.headers || {});
@@ -34,7 +37,8 @@ async function api(path, options={}) {
   let response;
   try {
     response = await fetch(path, {...options, headers, credentials:'same-origin', cache:'no-store'});
-  } catch {
+  } catch(error) {
+    if(error.name==='AbortError')throw error;
     throw new Error('无法连接服务。请确认服务正在运行，再刷新页面。');
   }
   let payload;
@@ -63,7 +67,7 @@ function render() {
   if (!main) {
     closeControl();
     mountHTML(document.getElementById('app'),shell(S));
-    enhanceControls();directoryController.afterRender();return;
+    enhanceControls();renderedView=S.view;directoryController.afterRender();return;
   }
   main.classList.toggle('score-main',S.view==='scores');
   const active=document.activeElement;
@@ -73,8 +77,9 @@ function render() {
   const tableArea=main.querySelector('.score-table-scroll');
   const tableScroll=tableArea?{top:tableArea.scrollTop,left:tableArea.scrollLeft}:null;
   const overviewScroll=main.querySelector('.overview-table-scroll')?.scrollLeft;
-  mountHTML(main,renderView(S));
-  enhanceControls(main);directoryController.afterRender();
+  if(renderedView===S.view)updateHTML(main,renderView(S),enhanceControls);
+  else {mountHTML(main,renderView(S));enhanceControls(main);}
+  renderedView=S.view;directoryController.afterRender();
   document.querySelectorAll('[data-nav]').forEach(a=>{
     const selected=a.dataset.nav===S.view;
     a.classList.toggle('active',selected);
@@ -98,25 +103,25 @@ function render() {
   }
   restoreControl(controlSnapshot);
 }
-async function refreshBase() {
-  const [stats,hierarchy,history] = await Promise.all([api('/api/stats'),api('/api/hierarchy'),api('/api/imports')]);
-  S.stats=stats;S.hierarchy=hierarchy.colleges;S.history=history.items;
+async function refreshBase({includeHistory=true}={}) {
+  const [stats,hierarchy,history] = await Promise.all([api('/api/stats'),api('/api/hierarchy'),includeHistory?api('/api/imports'):null]);
+  if(S.stats.revision!==stats.revision)studentCache.clear();
+  S.stats=stats;S.hierarchy=hierarchy.colleges;if(history)S.history=history.items;
   const classes=new Set(S.hierarchy.flatMap(co=>co.classes.map(cl=>cl.id)));
   if(S.exportAll)S.exportClasses=classes;
   else for(const id of S.exportClasses)if(!classes.has(id))S.exportClasses.delete(id);
   if(S.view==='overview'){
     S.overviewError='';
-    render();
     try {S.stats=await loadOverviewStats(api,stats);}
     catch(error){S.overviewError=error.message;}
   }
 }
 async function initialize() {
   try {
-    S.health=await api('/api/health');
+    const [health]=await Promise.all([api('/api/health'),refreshBase()]);
+    S.health=health;
     S.directoryOutdated=Number(S.health.directory_api_version||0)<3;
-    await refreshBase();
-    await scoreController.history();
+    if(S.view==='score-import')await scoreController.history();
     S.ready=true;
     render();
     if (S.view==='scores') await loadStudents();
@@ -132,13 +137,14 @@ async function changeView() {
   }
   if (!['import','score-import','scores','overview','help'].includes(key)) return;
   S.view=key;
+  if(!S.ready)return;
   render();
   if (key==='scores') await loadStudents();
   else if (key==='score-import') {
-    try {await refreshBase();await scoreController.history();render();} catch(e) {toast(e.message,true);}
+    try {await Promise.all([refreshBase(),scoreController.history()]);if(S.view===key)render();} catch(e) {toast(e.message,true);}
   }
   else if (key==='overview') {
-    try {await refreshBase();render();} catch(e) {toast(e.message,true);}
+    try {await refreshBase({includeHistory:false});if(S.view===key)render();} catch(e) {toast(e.message,true);}
   }
 }
 function gotoScores(college=null,classId=null) {
@@ -212,20 +218,29 @@ async function commitImport() {
   } catch(e) {S.importError=e.message;toast(e.message,true);}
   finally {S.busy=false;render();}
 }
-async function loadStudents() {
+async function loadStudents({refresh=false}={}) {
+  directoryController.fitPageSize();
   const seq=++listSequence;
-  S.listLoading=true;S.listError='';S.directoryStatsRecovered=false;S.directoryStatsError='';
-  if (S.view==='scores') render();
+  listAbort?.abort();listAbort=new AbortController();
+  const signal=listAbort.signal;
   const qs=new URLSearchParams();
   for (const [key,value] of Object.entries(S.filters)) if (value!==null&&value!=='') qs.set(key,String(value));
+  const cacheKey=qs.toString(),cached=studentCache.get(cacheKey);
+  const college=S.hierarchy.find(co=>co.id===S.filters.college_id),cl=college?.classes.find(cl=>cl.id===S.filters.class_id);
+  const context=cl?cl.name:college?.name||'全校';
+  if(!refresh&&cached&&cached.revision===S.stats.revision&&Date.now()-cached.time<CACHE_TTL){
+    S.students=cached.data;S.studentsLoaded=true;S.listContext=context;S.filters.page=cached.data.page;
+    S.listLoading=false;S.listError='';if(S.view==='scores')render();return;
+  }
+  S.listLoading=true;S.listError='';S.directoryStatsRecovered=false;S.directoryStatsError='';
+  if (S.view==='scores') render();
   try {
-    const health=await api('/api/health');
-    if(seq!==listSequence)return;
-    S.health=health;S.directoryOutdated=Number(health.directory_api_version||0)<3;
+    S.directoryOutdated=Number(S.health?.directory_api_version||0)<3;
     if(S.directoryOutdated&&S.filters.score_filter==='below_90')throw new Error(DIRECTORY_UPDATE_MESSAGE);
-    let result=await api(`/api/students?${qs}`);
+    const [list]=await Promise.all([api(`/api/students?${qs}`,{signal}),refresh?refreshBase({includeHistory:false}):null]);
+    let result=list;
     if (seq!==listSequence) return;
-    const missingStats=['qualified','below_90','at_90'].some(key=>result[key]===undefined);
+    const missingStats=['qualified','below_90','at_90'].some(key=>result[key]===undefined)||!Number.isInteger(result.valid_scores??result.settled);
     if(missingStats){
       try {
         const recovered=await completeDirectoryStatistics(api,qs.toString(),()=>seq===listSequence);
@@ -242,11 +257,15 @@ async function loadStudents() {
       result={...result,below_90:result.total-result.qualified-result.at_90};
       S.directoryStatsRecovered=true;
     }
-    S.students=result;S.filters.page=result.page;
+    S.students=result;S.studentsLoaded=true;S.listContext=context;S.filters.page=result.page;
     S.directoryOutdated=Number(S.health?.directory_api_version||0)<3||missingStats;
     if(S.exportAllStudents)S.selectedStudentTotal=result.total;
+    if(!missingStats){
+      studentCache.set(cacheKey,{data:result,revision:S.stats.revision,time:Date.now()});
+      if(studentCache.size>30)studentCache.delete(studentCache.keys().next().value);
+    }
   } catch(e) {
-    if (seq!==listSequence) return;
+    if (seq!==listSequence||e.name==='AbortError') return;
     S.listError=S.directoryOutdated?DIRECTORY_UPDATE_MESSAGE:e.message;toast(S.listError,true);
   } finally {
     if (seq===listSequence) {S.listLoading=false;if(S.view==='scores')render();}
@@ -355,8 +374,8 @@ document.addEventListener('click',async event=>{
         S.filters.sort=button.dataset.sort;S.filters.page=1;await loadStudents();break;
       case 'prev-page': if(S.students.page>1){S.filters.page=S.students.page-1;await loadStudents();}break;
       case 'next-page': if(S.students.page<S.students.pages){S.filters.page=S.students.page+1;await loadStudents();}break;
-      case 'refresh-students': await refreshBase();await loadStudents();break;
-      case 'edit-student': await openStudent(button.dataset.student);break;
+      case 'refresh-students': await loadStudents({refresh:true});break;
+      case 'edit-student': if(!S.listLoading&&!S.listError)await openStudent(button.dataset.student);break;
       case 'close-dialog': if(!S.saving){closeControl();document.getElementById('student-dialog').close();S.editing=null;}break;
     }
   } catch(e) {toast(e.message,true);button.disabled=false;}
@@ -386,7 +405,9 @@ document.addEventListener('input',event=>{
   const input=event.target;
   if(input.id==='student-search'){
     directoryController.clearStudentSelection();
-    S.filters.q=input.value;S.filters.page=1;clearTimeout(searchTimer);searchTimer=setTimeout(loadStudents,280);
+    S.filters.q=input.value;S.filters.page=1;clearTimeout(searchTimer);
+    listSequence++;listAbort?.abort();S.listLoading=true;S.listError='';render();
+    searchTimer=setTimeout(loadStudents,280);
   }
   if(input.id==='tree-search'){
     S.treeSearch=input.value;clearTimeout(treeTimer);treeTimer=setTimeout(render,150);

@@ -66,12 +66,12 @@ export function enhanceControls(root=document) {
   for(const select of root.querySelectorAll('select:not([data-customized])')){
     select.dataset.customized='true';select.hidden=true;select.tabIndex=-1;select.setAttribute('aria-hidden','true');
     if(!select.id)select.id=`custom-select-${++sequence}`;
-    const wrapper=document.createElement('div');wrapper.className='custom-select';
+    const wrapper=document.createElement('div');wrapper.className='custom-select';wrapper.id=`${select.id}-control`;
     select.before(wrapper);wrapper.append(select);
     const button=document.createElement('button');button.type='button';button.id=`${select.id}-trigger`;
     button.className='control-trigger';button.disabled=select.disabled;button.setAttribute('role','combobox');
     button.setAttribute('aria-haspopup','listbox');button.setAttribute('aria-expanded','false');button.setAttribute('aria-controls',`${select.id}-options`);
-    const label=document.querySelector(`label[for="${select.id}"]`);
+    const label=root.querySelector(`label[for="${select.id}"]`);
     const accessible=select.getAttribute('aria-label')||label?.textContent?.trim()||'选择选项';
     button.setAttribute('aria-label',accessible);
     if(label)label.htmlFor=button.id;

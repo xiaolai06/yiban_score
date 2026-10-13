@@ -97,6 +97,11 @@ def test_populated_directory_layout(browser, directory_url, tmp_path, width):
         playwright.expect(rows.nth(0).locator('.score-value')).to_have_text('86分')
         playwright.expect(rows.nth(1).locator('.score-value')).to_have_text('0分')
         playwright.expect(rows.nth(2).locator('.score-empty')).to_have_text('—')
+        if capacity >= 5:
+            playwright.expect(rows.nth(3).locator('.score-empty')).to_have_text('—')
+            playwright.expect(rows.nth(4).locator('.score-empty')).to_have_text('—')
+            playwright.expect(rows.nth(3).locator('.not-recorded')).to_have_text('未结算')
+            playwright.expect(rows.nth(4).locator('.not-recorded')).to_have_text('未结算')
         if capacity >= 7:
             playwright.expect(rows.nth(6).locator('.score-value')).to_have_text('86.75分')
         assert page.locator('#main select:visible').count() == 0
@@ -115,9 +120,9 @@ def test_populated_directory_layout(browser, directory_url, tmp_path, width):
             assert page.locator('.score-table-scroll').evaluate('(el) => el.scrollWidth <= el.clientWidth')
             last_row = rows.last.bounding_box()
             footer = page.locator('.pagination').bounding_box()
-            assert capacity > 8
+            assert capacity > 6
             assert last_row['y'] + last_row['height'] <= footer['y'] + 1
-            assert footer['y'] - last_row['y'] - last_row['height'] < 54
+            assert footer['y'] - last_row['y'] - last_row['height'] < 61
         page.screenshot(path=str(tmp_path / f'populated-scores-{width}.png'), full_page=True)
         # Last page has fewer rows, but the panel and footer must not collapse.
         page.locator('#page-jump').fill(str(pages))
@@ -313,7 +318,7 @@ def test_auto_page_capacity_tracks_resize_and_can_be_overridden(browser, directo
             last = page.locator('.students-table tbody tr').last.bounding_box()
             footer = page.locator('.pagination').bounding_box()
             assert last['y'] + last['height'] <= footer['y'] + 1
-            assert footer['y'] - last['y'] - last['height'] < 54
+            assert footer['y'] - last['y'] - last['height'] < 61
         assert capacities[0] < capacities[1] < capacities[2]
         assert len(calls) < 15, 'Automatic sizing should settle, not repeatedly reload'
         page.locator('#page-size-trigger').click()
@@ -413,10 +418,12 @@ def test_positive_grade_statistics_below_90_filter_and_sorting(browser, director
         page.locator('[data-action="tree-sort"][data-sort="count"]').click()
         page.locator('[data-action="tree-sort"][data-sort="count"]').click()
         assert page.locator('[data-action="select-college"]').evaluate_all('(els) => els.map(el => el.dataset.id)') == ['2', '1']
-        page.locator('[data-action="sort"][data-sort="college_name"]').click()
-        playwright.expect(page.locator('.students-table .cell-secondary').first).to_have_text('测试学院乙')
-        page.locator('[data-action="sort"][data-sort="college_name"]').click()
-        playwright.expect(page.locator('.students-table .cell-secondary').first).to_have_text('测试学院甲')
+        assert page.locator('.students-table [data-sort="college_name"]').count() == 0
+        assert page.locator('.students-table .cell-secondary').count() == 0
+        page.locator('[data-action="sort"][data-sort="class_name"]').click()
+        playwright.expect(page.locator('.students-table .cell-class').first).to_have_text('测试一班')
+        page.locator('[data-action="sort"][data-sort="class_name"]').click()
+        playwright.expect(page.locator('.students-table .cell-class').first).to_have_text('测试二班')
         page.locator('#score-filter-trigger').click()
         page.get_by_role('option', name='不合格（含无成绩）', exact=True).click()
         playwright.expect(page.locator('[data-stat="qualified"]')).to_have_text('0人')
@@ -579,5 +586,41 @@ def test_v2_backend_never_silently_exports_the_old_smaller_unqualified_list(brow
         expected = {f'202600{i:04}' for i in range(1, 36)}
         assert downloaded_students(page, tmp_path, 'score-export-below', 'new-rule.xlsx') == expected
         assert len(exported) == 1
+    finally:
+        page.close()
+
+
+def test_background_refresh_keeps_rows_controls_and_statistics(browser, directory_url):
+    page = browser.new_page(viewport={'width': 1440, 'height': 900})
+    pending = []
+    calls = []
+    try:
+        page.goto(directory_url + '/#scores')
+        page.wait_for_load_state('networkidle')
+        page.evaluate("""() => { window.savedNodes = {
+            table: document.querySelector('.students-table'),
+            row: document.querySelector('[data-student-row]'),
+            search: document.querySelector('#student-search'),
+            tree: document.querySelector('.tree-body')
+        }; }""")
+        original_rows = page.locator('[data-student-row]').count()
+        original_stats = page.locator('[data-stat="qualified"]').inner_text()
+        page.on('request', lambda request: calls.append(request.url) if '/api/' in request.url else None)
+        page.route('**/api/students?*', lambda route: pending.append(route))
+        page.locator('[data-action="refresh-students"]').click()
+        playwright.expect(page.locator('.score-table-scroll')).to_have_attribute('aria-busy', 'true')
+        playwright.expect(page.locator('[data-student-row]')).to_have_count(original_rows)
+        playwright.expect(page.locator('[data-stat="qualified"]')).to_have_text(original_stats)
+        assert page.evaluate("""() => savedNodes.table === document.querySelector('.students-table') &&
+            savedNodes.row === document.querySelector('[data-student-row]') &&
+            savedNodes.search === document.querySelector('#student-search') &&
+            savedNodes.tree === document.querySelector('.tree-body')""")
+        assert pending
+        for route in pending:
+            route.continue_()
+        playwright.expect(page.locator('.score-table-scroll')).to_have_attribute('aria-busy', 'false')
+        assert all('/api/health' not in url and '/api/imports' not in url for url in calls)
+        assert page.evaluate("savedNodes.row === document.querySelector('[data-student-row]')")
+        assert page.locator('.student-cell b').first.evaluate("el => parseFloat(getComputedStyle(el).fontSize)") >= 17
     finally:
         page.close()
