@@ -1,6 +1,5 @@
 """Excel scope exports and strict score-boundary statistics use temporary data."""
 import io
-from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
 import pytest
@@ -8,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from server.app import create_app
 from server.database import connection
-from server.excel_reader import read_workbook
+from server.excel_reader import read_workbook, xml_parse
 from server.score_export import build_score_workbook
 
 NS = {'s': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
@@ -38,17 +37,25 @@ def client(tmp_path):
 
 def sheets(content):
     with ZipFile(io.BytesIO(content)) as archive:
-        workbook = ET.fromstring(archive.read('xl/workbook.xml'))
+        workbook = xml_parse(archive.read('xl/workbook.xml'))
         names = [sheet.attrib['name'] for sheet in workbook.findall('s:sheets/s:sheet', NS)]
+        assert names[-1] == '导出说明'
         result = []
         for i, name in enumerate(names, 1):
-            root = ET.fromstring(archive.read(f'xl/worksheets/sheet{i}.xml'))
+            if name == '导出说明':
+                continue  # Student-scope assertions exclude the separate statistics sheet.
+            root = xml_parse(archive.read(f'xl/worksheets/sheet{i}.xml'))
             records = []
             for row in root.findall('s:sheetData/s:row', NS)[1:]:
                 record = {}
                 for cell in row.findall('s:c', NS):
-                    text = cell.find('s:is/s:t', NS) if cell.attrib.get('t') == 'inlineStr' else cell.find('s:v', NS)
-                    record[cell.attrib['r'].rstrip('0123456789')] = text.text if text is not None else None
+                    if cell.attrib.get('t') == 'inlineStr':
+                        value = ''.join(node.text or '' for node in cell.findall('s:is//s:t', NS))
+                    else:
+                        node = cell.find('s:v', NS)
+                        value = node.text if node is not None else None
+                    if value is not None:
+                        record[cell.attrib['r'].rstrip('0123456789')] = value
                 records.append(record)
             result.append((name, records, root))
         return result
@@ -74,7 +81,9 @@ def test_export_class_keeps_all_records_zero_null_and_text(client):
     assert client.get('/api/students').json() == before
     # Validate a real round trip through the existing independent Excel reader.
     parsed = read_workbook(result.content, 'scores.xlsx')
-    assert len(parsed) == 1 and parsed[0].rows == 9
+    assert len(parsed) == 2 and parsed[0].rows == 9
+    assert parsed[-1].name == '导出说明'
+    assert parsed[-1].cell(1, 3).value == 8
 
 
 def test_college_export_splits_classes_and_deduplicates_overlapping_scopes(client):
@@ -102,13 +111,13 @@ def test_unqualified_export_includes_missing_unfinished_but_not_settled_90(clien
     assert export(client, college_ids=[2], below_90=True).status_code == 400
 
 
-def test_qualified_statistics_use_strict_thresholds_and_scope(client):
+def test_qualified_statistics_use_inclusive_thresholds_and_scope(client):
     result = client.get('/api/students?class_id=1').json()
-    assert result['qualified'] == 2 and result['below_90'] == 5 and result['at_90'] == 1
+    assert result['qualified'] == 3 and result['below_90'] == 5 and result['at_90'] == 1
     assert result['settled'] == 5 and result['total'] == 8
     assert result['average_rate'] == 74
     all_result = client.get('/api/students').json()
-    assert all_result['qualified'] == 4 and all_result['below_90'] == 5
+    assert all_result['qualified'] == 5 and all_result['below_90'] == 5
     missing = client.get('/api/students?score_filter=missing').json()
     assert missing['qualified'] == missing['settled'] == 0
     assert missing['below_90'] == missing['total'] == 1
@@ -184,9 +193,10 @@ def test_below_90_filter_and_statistics_match_export(client):
     exported = export(client, student_filter={'score_filter': 'below_90'})
     assert exported.headers['x-export-students'] == str(result['total'])
     full = client.get('/api/students?page_size=1').json()
-    assert full['qualified'] == 4 and full['below_90'] == 5
-    assert full['total'] == full['qualified'] + full['below_90'] + full['at_90']
-    assert client.get('/api/health').json()['directory_api_version'] >= 3
+    assert full['qualified'] == 5 and full['below_90'] == 5
+    assert full['total'] == full['qualified'] + full['below_90']
+    assert full['at_90'] <= full['qualified']
+    assert client.get('/api/health').json()['directory_api_version'] >= 4
 
 
 @pytest.mark.parametrize('sort', ['college_name', 'class_name'])
@@ -207,12 +217,14 @@ def test_unqualified_rule_is_shared_by_export_filter_and_count(client, status, r
                     (student_id, '状态分数边界测试', 3, status, rate))
         con.commit()
     before = client.get(f'/api/students/{student_id}').json()
-    expected = rate is None or status in ['未开始', '进行中'] or rate < 90
+    expected = rate is None or rate < 90
     result = client.get('/api/students?q=0099&score_filter=below_90').json()
     assert result['total'] == result['below_90'] == int(expected)
     assert result['qualified'] == result['at_90'] == 0
     full = client.get('/api/students?q=0099').json()
     assert full['below_90'] == int(expected)
+    assert full['qualified'] == int(not expected)
+    assert full['at_90'] == int(rate == 90)
     is_valid = rate is not None and status not in ['未开始', '进行中']
     assert full['settled'] == int(is_valid)
     assert full['average_rate'] == (rate if is_valid else None)

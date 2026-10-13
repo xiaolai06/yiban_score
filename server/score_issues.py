@@ -109,33 +109,37 @@ def export_table(groups, scope):
                       ISSUE_LABELS[e['action']], '；'.join(e['errors'])] for e in events]
 
 
+def issue_snapshot(con, saved_record):
+    """Share the projection within a caller's read transaction; never write audit."""
+    events = []
+    rows = con.execute('''SELECT r.id,r.batch_id,r.row_number,r.student_id,r.action,r.record_json,
+        b.name AS batch_name,b.filename,b.created_at,b.state AS batch_state
+        FROM score_import_rows r JOIN score_batches b ON b.id=r.batch_id
+        WHERE r.action IN ('unmatched','invalid','name_conflict','duplicate_conflict') ORDER BY r.id''')
+    for row in rows:
+        record = saved_record(row['record_json'])
+        sid = row['student_id']
+        valid_id = bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', sid))
+        event = dict(row)
+        event.pop('record_json')
+        event['student_id'] = sid if valid_id else ''
+        event['key'] = f'student:{sid}' if valid_id else f'row:{row["batch_id"]}:{row["row_number"]}'
+        for field in ('raw_id', 'source_name', 'name', 'source_college', 'college', 'source_class_name',
+                      'class_name', 'raw_status', 'raw_rate', 'raw_result', 'status'):
+            event[field] = str(record.get(field) or '')
+        errors = record.get('errors') or []
+        if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
+            raise HTTPException(503, '已保存的异常明细格式异常，请检查数据库备份。')
+        event['errors'] = errors
+        event['score_rate'] = recorded_rate(record.get('score_rate'))
+        events.append(event)
+    return group_issues(events)
+
+
 def install_issue_routes(app, db_path, csv_response, safe_csv, saved_record):
     def snapshot():
-        events = []
         with connection(db_path) as con:
-            # A single SELECT supplies a coherent snapshot, including reverted batches.
-            rows = con.execute('''SELECT r.id,r.batch_id,r.row_number,r.student_id,r.action,r.record_json,
-                b.name AS batch_name,b.filename,b.created_at,b.state AS batch_state
-                FROM score_import_rows r JOIN score_batches b ON b.id=r.batch_id
-                WHERE r.action IN ('unmatched','invalid','name_conflict','duplicate_conflict') ORDER BY r.id''')
-            for row in rows:
-                record = saved_record(row['record_json'])
-                sid = row['student_id']
-                valid_id = bool(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', sid))
-                event = dict(row)
-                event.pop('record_json')
-                event['student_id'] = sid if valid_id else ''
-                event['key'] = f'student:{sid}' if valid_id else f'row:{row["batch_id"]}:{row["row_number"]}'
-                for field in ('raw_id', 'source_name', 'name', 'source_college', 'college', 'source_class_name',
-                              'class_name', 'raw_status', 'raw_rate', 'raw_result', 'status'):
-                    event[field] = str(record.get(field) or '')
-                errors = record.get('errors') or []
-                if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
-                    raise HTTPException(503, '已保存的异常明细格式异常，请检查数据库备份。')
-                event['errors'] = errors
-                event['score_rate'] = recorded_rate(record.get('score_rate'))
-                events.append(event)
-        return group_issues(events)
+            return issue_snapshot(con, saved_record)
 
     def select(groups, key):
         if not key:

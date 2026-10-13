@@ -1,3 +1,5 @@
+import {installFollowUp} from './follow_up.js';
+import {newRemovalState,installRemovalController} from './roster_removal.js';
 import {newScoreState} from './score_views.js';
 import {installScoreController} from './score_controller.js';
 import {h, icon} from './components.js';
@@ -17,7 +19,7 @@ const S = {
   view:['import','score-import','scores','overview','help'].includes(location.hash.slice(1))?location.hash.slice(1):'import',
   stats:{...emptyStats},hierarchy:[],history:[],health:null,
   upload:null,sheetIndex:0,headerRow:1,headerDraft:null,mapping:{},mode:'update',preview:null,committed:null,allowNames:false,
-  score:newScoreState(),
+  score:newScoreState(),rosterOperation:'import',removal:newRemovalState(),
   busy:false,importError:'',filters:defaultFilters(),students:{...emptyList},studentsLoaded:false,listLoading:false,listError:'',listContext:'',
   openColleges:new Set(),treeSearch:'',editing:null,saving:false,ready:false,
   pageMode:'auto',exportClasses:new Set(),exportAll:false,exportBusy:false,
@@ -120,7 +122,7 @@ async function initialize() {
   try {
     const [health]=await Promise.all([api('/api/health'),refreshBase()]);
     S.health=health;
-    S.directoryOutdated=Number(S.health.directory_api_version||0)<3;
+    S.directoryOutdated=Number(S.health.directory_api_version||0)<4;
     if(S.view==='score-import')await scoreController.history();
     S.ready=true;
     render();
@@ -235,13 +237,14 @@ async function loadStudents({refresh=false}={}) {
   S.listLoading=true;S.listError='';S.directoryStatsRecovered=false;S.directoryStatsError='';
   if (S.view==='scores') render();
   try {
-    S.directoryOutdated=Number(S.health?.directory_api_version||0)<3;
+    if(refresh&&S.directoryOutdated)S.health=await api('/api/health',{signal});
+    S.directoryOutdated=Number(S.health?.directory_api_version||0)<4;
     if(S.directoryOutdated&&S.filters.score_filter==='below_90')throw new Error(DIRECTORY_UPDATE_MESSAGE);
     const [list]=await Promise.all([api(`/api/students?${qs}`,{signal}),refresh?refreshBase({includeHistory:false}):null]);
     let result=list;
     if (seq!==listSequence) return;
     const missingStats=['qualified','below_90','at_90'].some(key=>result[key]===undefined)||!Number.isInteger(result.valid_scores??result.settled);
-    if(missingStats){
+    if(missingStats||S.directoryOutdated){
       try {
         const recovered=await completeDirectoryStatistics(api,qs.toString(),()=>seq===listSequence);
         if(seq!==listSequence||!recovered)return;
@@ -249,18 +252,13 @@ async function loadStudents({refresh=false}={}) {
       } catch(error){
         if(seq!==listSequence)return;
         S.directoryStatsError=error.message;
+        result={...result,qualified:null,below_90:null,at_90:null};
       }
     }
-    // Older v2 aggregate fields exclude missing grades; normalize using the
-    // same complete snapshot, not the current page and not a fabricated zero.
-    if(S.directoryOutdated&&!missingStats&&Number.isInteger(result.qualified)&&Number.isInteger(result.at_90)){
-      result={...result,below_90:result.total-result.qualified-result.at_90};
-      S.directoryStatsRecovered=true;
-    }
     S.students=result;S.studentsLoaded=true;S.listContext=context;S.filters.page=result.page;
-    S.directoryOutdated=Number(S.health?.directory_api_version||0)<3||missingStats;
+    S.directoryOutdated=Number(S.health?.directory_api_version||0)<4||missingStats;
     if(S.exportAllStudents)S.selectedStudentTotal=result.total;
-    if(!missingStats){
+    if(!missingStats&&!S.directoryOutdated){
       studentCache.set(cacheKey,{data:result,revision:S.stats.revision,time:Date.now()});
       if(studentCache.size>30)studentCache.delete(studentCache.keys().next().value);
     }
@@ -442,4 +440,10 @@ dialog.addEventListener('click',event=>{if(event.target===dialog&&!S.saving){clo
 dialog.addEventListener('cancel',event=>{if(S.saving)event.preventDefault();else closeControl();});
 const directoryController=installDirectoryController(S,{render,loadStudents,toast});
 const scoreController=installScoreController(S,{api,render,toast,refreshBase});
+installFollowUp(S,{api,toast});
+installRemovalController(S,{api,render,toast,refreshBase,clearSelection:()=>{
+  studentCache.clear();listSequence++;listAbort?.abort();
+  S.listLoading=false;S.listError='';
+  directoryController.clearStudentSelection();directoryController.clearScope();
+}});
 initialize();

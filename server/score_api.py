@@ -314,6 +314,8 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                 if batch['state'] == 'reverted':
                     con.rollback()
                     return {'ok': True, 'idempotent': True, 'reverted_count': batch['updated_count']}
+                if con.execute('SELECT 1 FROM removal_score_batches WHERE score_batch_id=?', (batch_id,)).fetchone():
+                    raise HTTPException(409, '此批次包含已剔除并清理明细的人员，不能再整批撤销；未修改任何成绩。')
                 changes = con.execute("SELECT * FROM score_import_rows WHERE batch_id=? AND action='update'",
                                       (batch_id,)).fetchall()
                 # All-or-nothing: never undo later edits, even if only one student changed.

@@ -3,6 +3,9 @@
 export function hasNumericScore(value) {
   return typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=100;
 }
+export function isQualifiedScore(student) {
+  return hasNumericScore(student.score_rate)&&student.score_rate>=90;
+}
 export function hasValidScore(student) {
   return hasNumericScore(student.score_rate)&&!['未开始','进行中'].includes(student.status);
 }

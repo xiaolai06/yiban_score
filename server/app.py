@@ -22,16 +22,19 @@ from starlette.background import BackgroundTask
 
 from .database import STUDENT_SELECT, bump_revision, connection, init_db, revision
 from .excel_reader import WorkbookError, read_workbook
+from .grade_rules import (
+    NUMERIC_SCORE_SQL,
+    QUALIFIED_SQL,
+    UNQUALIFIED_SQL,
+    VALID_SCORE_SQL,
+)
 from .roster import FIELDS, REQUIRED, STATUSES, sheet_info, validate_rows
 from .score_export import build_score_workbook
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_UPLOAD = 20 * 1024 * 1024
 PREVIEW_TTL = 3600
-# A missing or unsettled grade belongs in the unqualified roster, without
-# manufacturing a numerical zero or altering the effective-score average.
-UNQUALIFIED_SQL = "(s.score_rate IS NULL OR s.status IN ('未开始','进行中') OR s.score_rate < 90)"
-VALID_SCORE_SQL = "(typeof(s.score_rate) IN ('integer','real') AND s.score_rate BETWEEN 0 AND 100 AND s.status NOT IN ('未开始','进行中'))"
+# Qualification is numerical >=90 everywhere; progress is tracked separately.
 
 class PreviewInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -216,7 +219,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
     def stats_data(con) -> dict:
         row = dict(con.execute(f'''SELECT COUNT(*) AS students,
             COUNT(DISTINCT s.class_id) AS classes, COUNT(DISTINCT c.college_id) AS colleges,
-            COUNT(CASE WHEN s.score_rate >= 90 THEN 1 END) AS qualified,
+            COUNT(CASE WHEN {QUALIFIED_SQL} THEN 1 END) AS qualified,
             COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled, ROUND(AVG(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END),2) AS average_rate
             FROM students s JOIN classes c ON c.id=s.class_id''').fetchone())
         counts = {r['status']: r['count'] for r in con.execute('SELECT status,COUNT(*) AS count FROM students GROUP BY status')}
@@ -231,8 +234,8 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
     def health():
         with connection(db_path) as con:
             return {'ok': True, 'storage': 'SQLite', 'database_file': db_path.name,
-                    'local_only': public_host is None, 'schema_version': 2, 'directory_api_version': 3, 'revision': revision(con),
-                    'statuses': STATUSES, 'max_upload_mb': 20, 'preview_ttl_minutes': 60}
+                    'local_only': public_host is None, 'schema_version': 2, 'directory_api_version': 4, 'revision': revision(con),
+                    'statuses': STATUSES, 'max_upload_mb': 20, 'preview_ttl_minutes': 60, 'roster_removal_api_version': 1, 'score_export_workbook_version': 3, 'follow_up_api_version': 1}
 
     @app.get('/api/stats')
     def stats():
@@ -241,7 +244,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             result['colleges_detail'] = [dict(r) for r in con.execute(f'''
                 SELECT co.id, co.name, COUNT(s.student_id) AS students,
                        COUNT(DISTINCT c.id) AS classes, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled,
-                       COUNT(CASE WHEN s.score_rate >= 90 THEN 1 END) AS qualified,
+                       COUNT(CASE WHEN {QUALIFIED_SQL} THEN 1 END) AS qualified,
                        ROUND(AVG(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END),2) AS average_rate
                 FROM colleges co JOIN classes c ON c.college_id=co.id
                 JOIN students s ON s.class_id=c.id GROUP BY co.id
@@ -306,18 +309,21 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             validated = validate_rows(sh, body.header_row, body.mapping)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        counts = {'new': 0, 'updated': 0, 'unchanged': 0, 'skipped_existing': 0}
+        counts = {'new': 0, 'updated': 0, 'unchanged': 0, 'skipped_existing': 0, 'excluded': 0}
         sample, conflicts = [], []
         with connection(db_path) as con:
             # A single consistent snapshot underpins counts and optimistic commit.
             con.execute('BEGIN')
             rev = revision(con)
             existing = {r['student_id']: dict(r) for r in con.execute(STUDENT_SELECT)}
+            excluded = {r[0] for r in con.execute('SELECT student_id FROM excluded_students')}
             for row in validated['rows']:
                 old = existing.get(row['student_id'])
                 action = 'new'
                 changes = []
-                if old:
+                if row['student_id'] in excluded:
+                    action = 'excluded'
+                elif old:
                     if body.mode == 'skip':
                         action = 'skipped_existing'
                     else:
@@ -339,6 +345,8 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                        error_count=len(validated['errors']), name_conflict_count=len(conflicts),
                        colleges=len({r['college'] for r in validated['rows']}),
                        classes=len({(r['college'], r['class_name']) for r in validated['rows']}))
+        if counts['excluded']:
+            validated['warnings'].append(f'已剔除的 {counts["excluded"]} 个学号将跳过，不会重新加入名单或统计。')
         preview_id = secrets.token_hex(16)
         payload = {'created_at': time.time(), 'upload_id': body.upload_id, 'meta': meta,
                    'sheet_name': sh.name, 'header_row': body.header_row, 'mapping': body.mapping,
@@ -384,7 +392,10 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                 existing = {r['student_id']: dict(r) for r in con.execute(STUDENT_SELECT)}
                 college_map = {r['name']: r['id'] for r in con.execute('SELECT id,name FROM colleges')}
                 class_map = {(r['college_id'], r['name']): r['id'] for r in con.execute('SELECT * FROM classes')}
+                excluded = {r[0] for r in con.execute('SELECT student_id FROM excluded_students')}
                 for row in payload['rows']:
+                    if row['student_id'] in excluded:
+                        continue
                     old = existing.get(row['student_id'])
                     if old and payload['mode'] == 'skip':
                         continue
@@ -413,7 +424,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                     source_rows,new_count,updated_count,unchanged_count,skipped_count,college_count,class_count)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''', (body.preview_id,payload['meta']['filename'],payload['meta']['sha256'],
                     payload['sheet_name'],payload['mode'],s['source_rows'],s['new'],s['updated'],s['unchanged'],
-                    s['skipped_existing'],s['colleges'],s['classes'])).lastrowid
+                    s['skipped_existing']+s.get('excluded', 0),s['colleges'],s['classes'])).lastrowid
                 bump_revision(con)
                 con.commit()
                 batch = dict(con.execute('SELECT * FROM import_batches WHERE id=?', (batch_id,)).fetchone())
@@ -533,7 +544,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         filename = 'scores-unqualified.xlsx' if selection.below_90 else 'scores-selected.xlsx'
         return Response(content, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         headers={'Content-Disposition': f'attachment; filename="{filename}"',
-                                 'X-Export-Students': str(len(rows))})
+                                 'X-Export-Students': str(len(rows)), 'X-Export-Workbook-Version': '3'})
 
     @app.get('/api/students')
     def students(q: str = Query('', max_length=120), college_id: int | None = Query(None, ge=1),
@@ -546,15 +557,14 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         with connection(db_path) as con:
             con.execute('BEGIN')
             aggregate = dict(con.execute(f'''SELECT COUNT(*) AS total, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled,
-                COUNT(CASE WHEN {VALID_SCORE_SQL} AND s.score_rate > 90 THEN 1 END) AS qualified,
-                COUNT(CASE WHEN {VALID_SCORE_SQL} AND s.score_rate = 90 THEN 1 END) AS at_90,
+                COUNT(CASE WHEN {QUALIFIED_SQL} THEN 1 END) AS qualified,
+                COUNT(CASE WHEN {NUMERIC_SCORE_SQL} AND s.score_rate = 90 THEN 1 END) AS at_90,
                 ROUND(AVG(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END),2) AS average_rate FROM students s
                 JOIN classes c ON c.id=s.class_id''' + where, params).fetchone())
             total = aggregate['total']
             aggregate['valid_scores'] = aggregate['settled']
-            # Every remaining student lacks a settled score or scores below 90.
-            # A settled score of exactly 90 remains separate from both groups.
-            aggregate['below_90'] = total - aggregate['qualified'] - aggregate['at_90']
+            # at_90 is now an informative SUBSET of qualified, not a third group.
+            aggregate['below_90'] = total - aggregate['qualified']
             pages = max(1, math.ceil(total / page_size))
             actual_page = min(page, pages)
             sort_columns = {'student_id': 's.student_id', 'name': 's.name', 'score_rate': 's.score_rate',
@@ -619,8 +629,14 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
     def index():
         return FileResponse(ROOT / 'web' / 'index.html', headers={'Cache-Control': 'no-cache'})
 
+    from .roster_removal import install_removal_routes
+    install_removal_routes(app, db_path, stage, read_upload, read_stage, stage_path, safe_json_write, csv_response, safe_csv)
+
     from .score_api import install_score_routes
     install_score_routes(app, db_path, stage, read_stage, stage_path, safe_json_write, clean_expired, csv_response, safe_csv)
+
+    from .follow_up import install_follow_up_routes
+    install_follow_up_routes(app, db_path, csv_response, safe_csv)
 
     app.mount('/static', StaticFiles(directory=ROOT / 'web'), name='static')
     return app

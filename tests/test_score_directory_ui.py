@@ -95,13 +95,16 @@ def test_populated_directory_layout(browser, directory_url, tmp_path, width):
         pages = math.ceil(35 / capacity)
         playwright.expect(rows).to_have_count(capacity)
         playwright.expect(rows.nth(0).locator('.score-value')).to_have_text('86分')
-        playwright.expect(rows.nth(1).locator('.score-value')).to_have_text('0分')
-        playwright.expect(rows.nth(2).locator('.score-empty')).to_have_text('—')
+        if capacity >= 2:
+            playwright.expect(rows.nth(1).locator('.score-value')).to_have_text('0分')
+        if capacity >= 3:
+            playwright.expect(rows.nth(2).locator('.score-empty')).to_have_text('—')
         if capacity >= 5:
-            playwright.expect(rows.nth(3).locator('.score-empty')).to_have_text('—')
-            playwright.expect(rows.nth(4).locator('.score-empty')).to_have_text('—')
-            playwright.expect(rows.nth(3).locator('.not-recorded')).to_have_text('未结算')
-            playwright.expect(rows.nth(4).locator('.not-recorded')).to_have_text('未结算')
+            # Provisional numeric values stay visible; status/tooltip distinguishes settlement.
+            playwright.expect(rows.nth(3).locator('.score-value')).to_have_text('0分')
+            playwright.expect(rows.nth(4).locator('.score-value')).to_have_text('20分')
+            playwright.expect(rows.nth(3).locator('.rate-value')).to_have_attribute('title','暂存分值，尚未结算')
+            playwright.expect(rows.nth(4).locator('.rate-value')).to_have_attribute('title','暂存分值，尚未结算')
         if capacity >= 7:
             playwright.expect(rows.nth(6).locator('.score-value')).to_have_text('86.75分')
         assert page.locator('#main select:visible').count() == 0
@@ -231,8 +234,10 @@ def test_scope_checkboxes_and_real_xlsx_downloads(browser, directory_url, tmp_pa
             path = tmp_path / filename
             result.value.save_as(path)
             workbook = read_workbook(path.read_bytes(), filename)
-            assert len(workbook) == expected_sheets
-            assert sum(sheet.rows - 1 for sheet in workbook) == expected_people
+            assert len(workbook) == expected_sheets + 1
+            assert workbook[-1].name == '导出说明'
+            assert sum(sheet.rows - 1 for sheet in workbook[:-1]) == expected_people
+            assert workbook[-1].cell(1, 3).value == expected_people
             playwright.expect(page.locator('.export-menu summary')).not_to_contain_text('导出中')
 
         download('score-export', 'college.xlsx', 2, 30)
@@ -342,7 +347,8 @@ def downloaded_students(page, tmp_path, action, filename):
     path = tmp_path / filename
     result.value.save_as(path)
     workbook = read_workbook(path.read_bytes(), filename)
-    return {sheet.cell(row, 0).text() for sheet in workbook for row in range(1, sheet.rows)}
+    assert workbook[-1].name == '导出说明'
+    return {sheet.cell(row, 0).text() for sheet in workbook[:-1] for row in range(1, sheet.rows)}
 
 
 @pytest.mark.parametrize('width', [1440, 390])
@@ -489,7 +495,7 @@ def test_legacy_statistics_read_every_page_and_verify_revision(browser, director
                 return {items:rows.slice((page-1)*size,page*size),total:205,recorded:205,settled:settled.length,page,page_size:size,pages:Math.ceil(205/size)};
             };
             const data = await completeDirectoryStatistics(api,'score_filter=all&page_size=7&page=2');
-            return {data,scans,expected:{qualified:settled.filter(row=>row.score_rate>90).length,below_90:rows.filter(row=>row.status==='进行中'||row.score_rate<90).length,at_90:settled.filter(row=>row.score_rate===90).length}};
+            return {data,scans,expected:{qualified:rows.filter(row=>row.score_rate>=90).length,below_90:rows.filter(row=>row.score_rate<90).length,at_90:rows.filter(row=>row.score_rate===90).length}};
         }''')
         assert result['scans'] == [1, 2, 3, 1, 2, 3]
         assert len(result['data']['items']) == 7
@@ -567,7 +573,7 @@ def test_v2_backend_never_silently_exports_the_old_smaller_unqualified_list(brow
         page.goto(directory_url + '/#scores')
         page.wait_for_load_state('networkidle')
         playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('35人')
-        playwright.expect(page.locator('.directory-service-alert')).to_contain_text('不合格含无有效成绩')
+        playwright.expect(page.locator('.directory-service-alert')).to_contain_text('统一≥90合格')
         page.locator('.export-menu summary').click()
         page.locator('[data-action="score-export-below"]').click()
         playwright.expect(page.locator('#toast')).to_contain_text('Ctrl+C')
@@ -575,14 +581,16 @@ def test_v2_backend_never_silently_exports_the_old_smaller_unqualified_list(brow
         assert not exported
         page.locator('#score-filter-trigger').click()
         page.get_by_role('option', name='不合格（含无成绩）', exact=True).click()
-        playwright.expect(page.locator('.empty h3')).to_have_text('成绩读取失败')
-        playwright.expect(page.locator('.empty p')).to_contain_text('重新启动')
+        playwright.expect(page.locator('#scores-update-status')).to_contain_text('更新失败')
+        playwright.expect(page.locator('#scores-update-status')).to_contain_text('重新启动')
+        playwright.expect(page.locator('#scores-update-status')).to_contain_text('已保留上次结果')
         # A refreshed/upgraded service can resume without reloading the whole UI.
         page.unroute('**/api/health', legacy_health)
         page.unroute('**/api/students?*', legacy_counts)
-        page.locator('.empty [data-action="refresh-students"]').click()
+        page.locator('#scores-update-status [data-action="refresh-students"]').click()
+        playwright.expect(page.locator('.directory-service-alert')).to_have_count(0)
+        playwright.expect(page.locator('.score-table-scroll')).to_have_attribute('aria-busy','false')
         playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('35人')
-        assert page.locator('.directory-service-alert').count() == 0
         expected = {f'202600{i:04}' for i in range(1, 36)}
         assert downloaded_students(page, tmp_path, 'score-export-below', 'new-rule.xlsx') == expected
         assert len(exported) == 1

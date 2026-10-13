@@ -1,6 +1,6 @@
 // Compatibility for a still-running old service: count complete, read-only
 // recorded-score pages, not just the visible page. Never substitute 0 for missing fields.
-import {hasNumericScore,hasValidScore} from './grade_values.js';
+import {hasNumericScore,hasValidScore,isQualifiedScore} from './grade_values.js';
 export async function completeDirectoryStatistics(api,query,isCurrent=()=>true) {
   for(let attempt=0;attempt<2;attempt++){
     if(!isCurrent())return null;
@@ -23,11 +23,9 @@ export async function completeDirectoryStatistics(api,query,isCurrent=()=>true) 
         if(seen.has(student.student_id)){changed=true;break;}
         seen.add(student.student_id);
         if(!hasNumericScore(rate)){invalid=true;continue;}
-        if(!hasValidScore(student))continue;
-        settled++;
-        scoreSum+=rate;
-        if(rate>90)counts.qualified++;
-        else if(rate===90)counts.at_90++;
+        if(isQualifiedScore(student))counts.qualified++;
+        if(rate===90)counts.at_90++; // Informative subset of qualified.
+        if(hasValidScore(student)){settled++;scoreSum+=rate;}
       }
       if(changed)break;
     }
@@ -35,7 +33,7 @@ export async function completeDirectoryStatistics(api,query,isCurrent=()=>true) 
     const after=await api('/api/health');
     const reported=snapshot.valid_scores??snapshot.settled;
     if(!changed&&before.revision===after.revision&&seen.size===expected&&(invalid||!Number.isInteger(reported)||settled===reported)){
-      return {...snapshot,...counts,settled,valid_scores:settled,average_rate:settled?Math.round(scoreSum/settled*100)/100:null,below_90:snapshot.total-counts.qualified-counts.at_90};
+      return {...snapshot,...counts,settled,valid_scores:settled,average_rate:settled?Math.round(scoreSum/settled*100)/100:null,below_90:snapshot.total-counts.qualified};
     }
   }
   throw new Error('补算期间成绩发生变化，无法确认统计，请刷新后重新读取。');

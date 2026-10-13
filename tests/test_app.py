@@ -114,8 +114,8 @@ def test_overview_qualified_counts_include_90_and_exclude_missing(client):
     assert colleges['示例学院B']['qualified'] == 2
     assert colleges['示例学院C']['qualified'] == 0
     assert sum(co['qualified'] for co in colleges.values()) == stats['qualified']
-    # The overview follows the numeric >=90 rule; the existing details API is unchanged.
-    assert client.get('/api/students').json()['qualified'] == 2
+    # Overview and details now share the inclusive numerical qualification rule.
+    assert client.get('/api/students').json()['qualified'] == 5
     student = client.get('/api/students/000002').json()
     response = client.patch('/api/students/000002', headers=WRITE, json={
         'version': student['version'], 'status': '已完成', 'score_rate': None,

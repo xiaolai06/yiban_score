@@ -88,3 +88,29 @@ CREATE TABLE IF NOT EXISTS score_import_rows (
 );
 CREATE INDEX IF NOT EXISTS ix_score_rows_batch ON score_import_rows(batch_id);
 CREATE INDEX IF NOT EXISTS ix_score_rows_student ON score_import_rows(student_id);
+
+-- Removal stores only aggregate audit and exclusion IDs, not deleted identity/score snapshots.
+CREATE TABLE IF NOT EXISTS removal_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    preview_id TEXT NOT NULL UNIQUE,
+    filename TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    sheet_name TEXT NOT NULL,
+    source_rows INTEGER NOT NULL,
+    unique_ids INTEGER NOT NULL,
+    deleted_count INTEGER NOT NULL,
+    unmatched_count INTEGER NOT NULL,
+    duplicate_rows INTEGER NOT NULL,
+    score_rows INTEGER NOT NULL,
+    change_rows INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS excluded_students (
+    student_id TEXT PRIMARY KEY NOT NULL,
+    removal_batch_id INTEGER NOT NULL REFERENCES removal_batches(id)
+);
+CREATE TABLE IF NOT EXISTS removal_score_batches (
+    removal_batch_id INTEGER NOT NULL REFERENCES removal_batches(id),
+    score_batch_id INTEGER NOT NULL REFERENCES score_batches(id),
+    PRIMARY KEY(removal_batch_id, score_batch_id)
+);

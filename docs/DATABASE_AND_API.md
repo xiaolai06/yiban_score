@@ -10,6 +10,8 @@ score_batches (成绩导入批次) 1 ── N score_import_rows (逐行原值/�
 student_changes (每次学生变更的 before/after 审计)
 import_batches (原名单导入批次，保留 V1 功能)
 metadata (schema_version=2 / revision)
+removal_batches (剔除批次汇总) 1 ── N excluded_students (最小剔除学号标记)
+removal_batches N ── N score_batches (通过 removal_score_batches 禁止被清理批次整批撤销)
 ```
 
 `score_import_rows.student_id` 故意不设学生外键，因为必须保存原名单外学号的异常行；这不代表可以新建该学生。`students.class_id`、学院班级关系仍是正式外键。
@@ -132,10 +134,10 @@ revert 流程：检查每个更新学生的当前 version 和 score_batch_id 与
 
 | 方法/路径 | 用途 |
 |---|---|
-| GET `/api/health` | SQLite 状态、schema_version、状态枚举、限制；directory_api_version ≥3 表示不合格包含无有效成绩 |
+| GET `/api/health` | SQLite 状态、schema_version、状态枚举、限制；directory_api_version ≥4 表示全站统一按有效数值≥90合格、进度单独跟进 |
 | GET `/api/stats` | 人数/状态/学院汇总；新增全校及 colleges_detail 每学院 qualified（非空得分率 ≥90%，含90，不按状态排除），原有效平均字段兼容保留 |
 | GET `/api/hierarchy` | 学院与班级树 |
-| GET `/api/students` | 分页、q 搜索、college_id/class_id、status、score_filter（all/recorded/missing/below_90）、排序（含college_name/class_name）；返回完整筛选 qualified（有效>90）、below_90（不合格：<90或无有效成绩）、at_90（有效=90）和有效平均 |
+| GET `/api/students` | 分页、q 搜索、college_id/class_id、status、score_filter（all/recorded/missing/below_90）、排序（含college_name/class_name）；返回完整筛选 qualified（有效数值≥90）、below_90（<90或无有效数值）、at_90（数值=90，合格子集）和已结算平均 |
 | GET `/api/students/{student_id}` | 单个学生当前档案 |
 | PATCH `/api/students/{student_id}` | JSON version/status/score_rate；实际修改递增版本并清空当前成绩来源 |
 | GET `/api/students/export.csv` | 当前筛选的全部学生导出（兼容原接口） |
@@ -147,11 +149,64 @@ revert 流程：检查每个更新学生的当前 version 和 score_batch_id 与
 
 完整参数以 `/api/openapi.json` 或 `server/app.py` 为准。原有路由与前端对接未移除。
 
-XLSX 范围导出示例：`{"college_ids":[1],"class_ids":[8,9],"below_90":false}`。学院和班级取并集，重复/重叠不重复导出；`all_students:true` 表示全校。须明确指定非空范围，未知学院/班级返回404。学院/班级范围导出不接受分页、搜索或状态筛选，以免截断整个班级。学生导出可用 `student_ids:["0001","0002"]` 指定本人；表头全选用 `student_filter:{q:"",college_id:1,class_id:null,status:"",score_filter:"below_90"}` 指定完整筛选，再通过 `excluded_student_ids` 排除取消勾选的人员，不限制当前页。学生与学院/班级选择不得混用，避免意外扩大导出范围；所有学号都作为绑定参数，未知指定学号返回404。`below_90:true` 与 `score_filter=below_90` 保留原参数名，但按最新不合格名单规则处理：`score_rate IS NULL OR status IN ('未开始','进行中') OR score_rate < 90`。OR条件整体加括号后与范围/学号/搜索条件相交，不会扩大全校范围。任何状态的空值都计入，未完成记录即使有暂存90/100分也计入；有有效成绩的恰好90分仍不包含。`below_90` 人数取同一完整快照的 total − qualified − at_90。有效成绩人数/平均值仍排除空值及未开始/进行中，原状态、空值和暂存分数原样保留。空结果返回400，不生成误导的空文件。
+XLSX 范围导出示例：`{"college_ids":[1],"class_ids":[8,9],"below_90":false}`。学院和班级取并集，重复/重叠不重复导出；`all_students:true` 表示全校。须明确指定非空范围，未知学院/班级返回404。学院/班级范围导出不接受分页、搜索或状态筛选，以免截断整个班级。学生导出可用 `student_ids:["0001","0002"]` 指定本人；表头全选用 `student_filter:{q:"",college_id:1,class_id:null,status:"",score_filter:"below_90"}` 指定完整筛选，再通过 `excluded_student_ids` 排除取消勾选的人员，不限制当前页。学生与学院/班级选择不得混用，避免意外扩大导出范围；所有学号都作为绑定参数，未知指定学号返回404。`below_90:true` 与 `score_filter=below_90` 保留原参数名，但按最新不合格名单规则处理：`NOT QUALIFIED_SQL`（资格定义见 `server/grade_rules.py`，有效数值90–100即合格）。与范围/学号/搜索条件相交，不会扩大全校范围。任何状态的空值/无有效数值或<90均不合格；有90/100等数值的未完成记录分数已合格，另列待跟进，不进入低分不合格文件。`below_90`为同一快照的total−qualified；`at_90`是qualified子集，不能再重复扣除。结算人数/平均值仍排除空值及未开始/进行中，原状态、空值和暂存分数保持不变。空结果返回400，不生成误导的空文件。
 
-前端在不合格导出前核对 `/api/health` 的 directory_api_version，旧v2虽然有导出接口，但会漏掉无成绩人员，须重启服务加载v3；不允许把旧名单静默当成完整名单。筛选加载也核对版本，刷新可恢复已升级的服务，无需更换数据库。
+前端在不合格导出前核对 `/api/health` 的 directory_api_version≥4，旧v2/v3存在口径差异，须重启服务；不允许静默下载旧规则名单。筛选加载也核对版本，刷新可恢复已升级的服务，无需更换数据库。
 
-导出使用 Python 标准库生成 XLSX，无额外运行依赖；每个班级一个工作表，自动处理同名、非法字符和31字长度限制。学号、姓名等字段为纯文本单元格（含以 `=` 开头的内容也不执行公式）；得分率使用百分比数值格式，得分为原0–100数值，空值留空。请求仍受对应访问边界、Origin与 `X-Requested-With: StudentScore` 检查，导出不写数据库。
+导出使用 Python 标准库生成 XLSX，无额外运行依赖；每个班级一个工作表，最后附加「导出说明」工作表，自动处理同名、非法字符和31字长度限制。学号、姓名等字段为纯文本单元格（含以 `=` 开头的内容也不执行公式）；得分率使用百分比数值格式，得分为原0–100数值，空值留空。请求仍受对应访问边界、Origin与 `X-Requested-With: StudentScore` 检查，导出不写数据库。
+
+### 5.1 Excel 样式与导出统计说明（新增）
+
+`GET /api/health` 返回 `score_export_workbook_version: 3`，成功导出响应包含 `X-Export-Workbook-Version: 3` 和原有 `X-Export-Students`。前端下载前检查格式版本，旧后端缺字段时要求重启，不把旧文件描述为有新统计说明。原查询/勾选/筛选参数及名单范围不变。
+
+`server/xlsx_styles.py` 提供所有填充和空值单元格的水平/垂直居中样式，中文微软雅黑、数字Times New Roman。纯数字文本学号以及混合中文字符串中的数字通过 inlineStr 富文本逐段指定字体，不转换为数值，不丢前导零，也不会执行源文字公式。数字型分值、人数及比例使用Times New Roman；说明表比例使用真实数值加 `0.00%` 显示格式。查看设备缺字体时可自行替代，文件不内嵌/下载字体。`table_export.py` 生成的异常Excel共享字体和对齐，但没有正式学生统计说明；CSV格式不支持这些样式及工作表。
+
+`score_export.py` 将实际输出的各班级人员和同一份最终 rows 快照统计为最后的「导出说明」表，班级sheet数量 + 1 才是Excel总sheet数量，说明表不是学生明细。首行10个表头：统计范围、学院、班级、导出人数、参与人数、未参与人数、参与率、合格人数（≥90）、合格率（占参与人数）、合格占导出人数比例。第二行为本次导出合计，之后每个实际班级一行；下面附完整定义和分母说明。未匹配/已剔除人员和其他范围人员不会进入统计。
+
+`export_statistics(rows)`：total 为导出人员数；参与为0<有效数值得分率≤100；不参与为total−participated；合格为90≤有效得分率≤100。空值、0、非数值、非法数值不参与；不因学生状态另行排除。participation_rate=participated/total；qualification_rate=qualified/participated；qualified_total_rate=qualified/total。参与人数为0时qualification_rate为None，说明表显示文字“—”；其余两个比例在非空导出中正常为0。空导出仍拒绝，不生成假统计表。
+
+全校/学院/班级并集、指定学生去重、全选筛选快照+取消勾选及不合格筛选都在原SQL中确定最终人员集，统计只取该集合。总计不是各班比例平均值，不根据前端当前页或另发数据库查询猜测人数。人数整数、比例原值为数值，百分比仅显示到两位小数，不修改原分值。
+
+合格规则由 `grade_rules.py` 与前端 `grade_values.js` 统一：有效数值≥90（含90、不按进度排除）。总览、成绩明细、Excel合格人数一致；不合格仅为无有效数值或<90。考试状态未开始/进行中另列进度跟进，≥90不能被导出为低分不合格。结算人数及平均值仍保持原结算规则，真实完成0参与平均；Excel参与率继续按>0计算，不推断实际缺考。导出保持只读，不新增数据库迁移或运行依赖。
+
+### 5.2 名单剔除（新增）
+
+`GET /api/health` 返回 `roster_removal_api_version: 1`。前端无该字段时阻止剔除，要求重启后端。新增表通过 `CREATE TABLE IF NOT EXISTS` 在启动时创建，不改写现有学生分值。schema_version 继续为2；**不能用不认识剔除标记的旧程序继续操作该库**。
+
+| 方法/路径 | 用途 |
+|---|---|
+| POST `/api/imports/analyze` | 复用 XLS/XLSX 上传；上传不删除数据 |
+| GET `/api/imports/{upload_id}/sheet` | 复用表头重新识别；指定工作表及表头行 |
+| POST `/api/removals/preview` | `{upload_id, sheet_index, header_row}`；固定 A 列，不接受列映射/姓名条件 |
+| GET `/api/removals/{preview_id}/preview.csv` | 服务端全量学号、匹配结果及所有错误；不受页面前25条限制 |
+| POST `/api/removals/commit` | `{preview_id, confirm:true, confirmation:"确认剔除", expected_count:预览matched人数}` |
+| GET `/api/removals?page=1&page_size=10` | 全部持久批次分页，最多50条/页，返回 items/total/page/pages |
+
+仅处理选中工作表、指定表头之后的数据；A列表头须识别为学号。学号调用名单的严格 `identifier(Cell)` 校验，保留文本前导零和大小写，不用姓名、院系或班级纠正/推测学号。重复合法学号去重；空行及重复表头跳过；空学号但其他列有值、公式、错误值、布尔值、科学计数法文字、非整数数字、超过15位的数字学号等阻止整批剔除。无有效学号也不能提交。
+
+预览只读数据库一致快照；暂存不可变 payload（60分钟），summary 包含 source_rows/unique_ids/matched/unmatched/duplicate_rows/error_count/score_rows/change_rows/already_excluded，sample 为前25个去重学号的数据库身份和当前成绩，errors 为前100个错误，完整CSV不截断。未匹配者只登记剔除学号，不删除任何同名人员。
+
+提交检查明确确认、匹配人数、预览错误、revision。`BEGIN IMMEDIATE` 内写批次汇总、`excluded_students` 标记、受影响成绩批次关联，然后按相同学号集合删除 `score_import_rows`、`student_changes` 和 `students`，只清理本次删除导致空出的目录、递增revision。任何SQL失败整批回滚；并发重复提交和重启后相同令牌重试幂等返回同一批次，确认人数不一致拒绝。没有在线撤销或解除剔除接口。
+
+`excluded_students` 仅存 student_id/removal_batch_id，不保存姓名或分值；全部有效学号（含未匹配）登记剔除。普通名单预览新增 action=excluded 和 summary.excluded，提交再次核对剔除表，不重建学生，计入历史 skipped_count。成绩导入仍不创建名单外人员；后来主动导入新成绩文件可产生新的历史异常，但不进正式统计。删除后关联成绩批次撤销返回409，避免删除部分明细后意外执行不完整的整批撤销。
+
+名单/成绩历史批次的文件摘要、原始汇总仍保留，不代表当前人数；被剔除的逐人快照不留在正式业务表或剔除审计中。正式学生查询、人数、目录、名单/成绩导出以及既有异常汇总投影自动反映删除结果。旧备份和源Excel不改动，删除不等于安全擦盘。提交后本次上传及过时预览尽力清理，清理失败不把已成功数据库事务误报为未删除；其他窗口剔除后新生成的预览不主动清掉。
+
+### 5.3 辅导员分类待跟进清单（新增）
+
+健康能力 `follow_up_api_version=1`。正式分类从当前students读取，历史异常复用 `score_issues.issue_snapshot`；一条读事务核对revision，名单、分类计数及页面来自一致快照。不修改学生、分数、状态或异常审计，也不增加联系/催办操作记录。
+
+| 接口 | 参数及说明 |
+|---|---|
+| GET `/api/follow-up` | kind、q（最多120字）、college_id/class_id（实际ID）、page、page_size（1–100）；返回items/total/page/pages/counts/scope_students/revision及请求范围 |
+| GET `/api/follow-up/export.xlsx` | kind/q/college_id/class_id，可选expected_revision；完整范围全部页，一张带分类原因的核对清单，不替代正式分班成绩工作簿 |
+| GET `/api/follow-up/export.csv` | 同范围及revision核对，UTF-8 BOM、文本公式转义 |
+
+kind取值：pending（所有待跟进）、missing（空/无有效数值）、not_started、in_progress、completed_low（已完成/已录入且有效数值<90，含真实0）、other_low（其余状态有效数值<90）、at_90（恰好90，已合格边界核对）、issues（历史异常）。正式pending按人员去重，包括无有效数值、数值<90或进度未开始/进行中；分类可交叉，at_90不因分数单独计为pending。≥90且未完成可同时是合格和待进度跟进。
+
+counts是当前范围及q下各分类记录数，不限当前页；scope_students只计当前正式名单匹配q的人员。issues按合法学号汇总，非法/缺失ID独立成项，排除已剔除学号；历史异常不代表尚未解决，也不计入正式pending。在学院/班级范围只允许绑定实际在册学号的异常，不根据源学院/班级文字猜测未知归属；无法绑定者仅全校显示。历史分值与当前成绩分别返回，名单外人员qualified为None，不伪造正式资格。
+
+导出忽略分页，返回 `X-Export-Records`、`X-Follow-Up-Api-Version: 1` 和 `X-Data-Revision`；前端总是传expected_revision，读取后数据改变返回409，要求刷新；无记录返回400，错误/旧后端不伪造0或下载旧文件。Excel沿用微软雅黑/数字Times及空单元格居中；CSV仅纯文本。所有范围ID为绑定参数，q按字面搜索，不作为SQL/公式执行。用户浏览清单时的成绩页状态/得分下拉不传入该接口，清单有独立分类和搜索。
 
 ## 6. 扩展多考试时不要复用批次代替考试
 

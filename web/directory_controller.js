@@ -1,6 +1,6 @@
 import {closeControl} from './custom_controls.js';
 
-export const DIRECTORY_UPDATE_MESSAGE='当前启动窗口仍在运行旧后端。新版不合格名单包含低于90分、未录入及未开始/进行中等无有效成绩人员；请在启动窗口按 Ctrl+C，再重新启动网站，然后刷新本页。';
+export const DIRECTORY_UPDATE_MESSAGE='当前启动窗口仍在运行旧后端。新版统一按得分率≥90（含90）合格，不合格仅为<90或无有效数值；未开始/进行中另列待跟进；请在启动窗口按 Ctrl+C，再重新启动网站，然后刷新本页。';
 export const selectionFilters=S=>Object.fromEntries(['q','college_id','class_id','status','score_filter'].map(key=>[key,S.filters[key]]));
 export const selectedStudentCount=S=>S.exportAllStudents?Math.max(0,S.selectedStudentTotal-S.exportExcludedStudents.size):S.exportStudents.size;
 export const studentIsChecked=(S,id)=>S.exportAllStudents?!S.exportExcludedStudents.has(id):S.exportStudents.has(id);
@@ -95,6 +95,10 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
       else if(S.exportAll||S.exportClasses.size)applyScope(payload);
       else payload.student_filter=selectionFilters(S);
     } else applyScope(payload);
+    // Choosing an export completes this disclosure interaction. Closing it also
+    // prevents the next click from hiding the menu instead of opening it again.
+    const menu=document.querySelector('#score-list-tools .export-menu');
+    if(menu){menu.removeAttribute('open');menu.querySelector('summary')?.focus({preventScroll:true});}
     closeControl();S.exportBusy=true;render();
     try {
       // Reject old servers that would silently omit students with no grade.
@@ -102,7 +106,7 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
         const healthResponse=await fetch('/api/health',{credentials:'same-origin',cache:'no-store'});
         if(!healthResponse.ok)throw new Error('无法核对不合格导出规则，请稍后重试。');
         const health=await healthResponse.json();S.health=health;
-        if(Number(health.directory_api_version||0)<3){S.directoryOutdated=true;throw new Error(DIRECTORY_UPDATE_MESSAGE);}
+        if(Number(health.directory_api_version||0)<4){S.directoryOutdated=true;throw new Error(DIRECTORY_UPDATE_MESSAGE);}
       }
       const response=await fetch('/api/students/export.xlsx',{method:'POST',credentials:'same-origin',cache:'no-store',
         headers:{'Content-Type':'application/json','X-Requested-With':'StudentScore'},body:JSON.stringify(payload)});
@@ -114,11 +118,14 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
         if(response.status===422&&S.directoryOutdated)throw new Error(DIRECTORY_UPDATE_MESSAGE);
         throw new Error(typeof error.detail==='string'?error.detail:'导出失败，请刷新列表后重新选择。');
       }
+      if(Number(response.headers.get('X-Export-Workbook-Version')||0)<3){
+        throw new Error('当前后端尚未加载统一≥90合格规则及新版导出说明表。请在启动窗口按 Ctrl+C 后重新启动网站，再按 Ctrl+F5 刷新。');
+      }
       const blob=await response.blob(),url=URL.createObjectURL(blob);
       const link=document.createElement('a');link.href=url;
       link.download=mode==='below'?'不合格名单-含无成绩.xlsx':mode==='students'?'勾选学生成绩.xlsx':'学院班级成绩.xlsx';
       document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
-      toast(`已导出 ${response.headers.get('X-Export-Students')||''} 人，按班级分工作表。`);
+      toast(`已导出 ${response.headers.get('X-Export-Students')||''} 人，按班级分表，末尾附导出说明。`);
     } catch(error){toast(error.message||'无法连接服务，导出失败。',true);}
     finally {S.exportBusy=false;render();}
   }

@@ -1,6 +1,7 @@
 """Browser checks use the temporary UI server, never the real student database."""
 import csv
 import io
+import time
 from pathlib import Path
 
 import pytest
@@ -66,7 +67,7 @@ def test_exception_dialog_incremental_records_filters_and_exports(browser, ui_ur
         dialog = page.locator('#score-issues-dialog')
         playwright.expect(dialog).to_be_visible()
         page.locator('#issue-search').fill(sid)
-        person = dialog.locator('.issue-dialog-content > .table-scroll tbody tr').filter(has_text=sid)
+        person = dialog.locator(f'[data-person-key="student:{sid}"]')
         playwright.expect(person).to_have_count(1)
         playwright.expect(person.locator('.rate-value')).to_have_text('85%')
         assert dialog.locator('img').count() == 0
@@ -107,7 +108,8 @@ def test_exception_dialog_incremental_records_filters_and_exports(browser, ui_ur
         page.reload()
         page.locator('.heading-actions [data-action="score-issues-open"]').click()
         page.locator('#issue-search').fill(sid)
-        playwright.expect(dialog.locator('.issue-dialog-content > .table-scroll .rate-value')).to_have_text('95%')
+        playwright.expect(dialog.locator('.issue-table-scroll')).to_have_attribute('aria-busy','false')
+        playwright.expect(person.locator('.rate-value')).to_have_text('95%')
         assert not errors, errors
     finally:
         page.close()
@@ -218,6 +220,11 @@ def test_issue_refresh_retains_people_search_and_scroll(browser, ui_url):
             savedIssue.row === document.querySelector('[data-person-key]') &&
             savedIssue.search === document.querySelector('#issue-search') &&
             savedIssue.content.scrollTop === 120""")
+        # Busy state is set before fetch reaches the route interceptor; wait for
+        # that actual event rather than assuming synchronous network dispatch.
+        deadline=time.monotonic()+5
+        while not pending and time.monotonic()<deadline:
+            page.wait_for_timeout(20)
         assert pending
         for route in pending:
             route.continue_()
