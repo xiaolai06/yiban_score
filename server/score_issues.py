@@ -109,13 +109,18 @@ def export_table(groups, scope):
                       ISSUE_LABELS[e['action']], '；'.join(e['errors'])] for e in events]
 
 
-def issue_snapshot(con, saved_record):
+def issue_snapshot(con, saved_record, *, college_id=None, class_id=None, exclude_removed=False):
     """Share the projection within a caller's read transaction; never write audit."""
     events = []
     rows = con.execute('''SELECT r.id,r.batch_id,r.row_number,r.student_id,r.action,r.record_json,
         b.name AS batch_name,b.filename,b.created_at,b.state AS batch_state
         FROM score_import_rows r JOIN score_batches b ON b.id=r.batch_id
-        WHERE r.action IN ('unmatched','invalid','name_conflict','duplicate_conflict') ORDER BY r.id''')
+        LEFT JOIN students s ON s.student_id=r.student_id
+        LEFT JOIN classes c ON c.id=s.class_id
+        WHERE r.action IN ('unmatched','invalid','name_conflict','duplicate_conflict')
+          AND (? IS NULL OR c.college_id=?) AND (? IS NULL OR c.id=?)
+          AND (?=0 OR NOT EXISTS (SELECT 1 FROM excluded_students e WHERE e.student_id=r.student_id))
+        ORDER BY r.id''', (college_id, college_id, class_id, class_id, int(exclude_removed)))
     for row in rows:
         record = saved_record(row['record_json'])
         sid = row['student_id']

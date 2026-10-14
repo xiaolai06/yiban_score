@@ -65,7 +65,8 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
           if(!G.preview.can_commit&&G.preview.can_save_issues)body.save_issues_only=true;
           const result=await api('/api/scores/commit',{method:'POST',body:JSON.stringify(body)});
           G.committed=result.batch;G.preview=null;G.upload=null;G.audit=null;rowSeq++;
-          await Promise.all([refreshBase(),history()]);
+          try{await Promise.all([refreshBase(),history()]);}
+          catch(e){throw new Error(`成绩记录已保存，但列表刷新失败：${e.message}。请刷新后核对，勿重复导入。`);}
           const summary=result.batch.summary;
           issues.refresh();
           toast(result.batch.options?.save_issues_only?`已保存 ${summary.issue_rows} 条异常记录，正式成绩未修改。`:`本次记录已保存：新增 ${summary.new_scores||0} 条，更新 ${result.batch.updated_count-(summary.new_scores||0)} 条。`);

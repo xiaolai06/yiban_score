@@ -208,6 +208,18 @@ counts是当前范围及q下各分类记录数，不限当前页；scope_student
 
 导出忽略分页，返回 `X-Export-Records`、`X-Follow-Up-Api-Version: 1` 和 `X-Data-Revision`；前端总是传expected_revision，读取后数据改变返回409，要求刷新；无记录返回400，错误/旧后端不伪造0或下载旧文件。Excel沿用微软雅黑/数字Times及空单元格居中；CSV仅纯文本。所有范围ID为绑定参数，q按字面搜索，不作为SQL/公式执行。用户浏览清单时的成绩页状态/得分下拉不传入该接口，清单有独立分类和搜索。
 
+### 5.4 审查后的校验与快照保障
+
+新增 `read_snapshot_api_version=1`；GET `/api/hierarchy`、`/api/students`返回读取快照的revision。总览多个聚合SELECT、分页count/rows同一只读事务，不混用并发修改前后的结果。前端基础目录与统计版本不一致会重读，列表缓存绑定自身revision，过期请求丢弃。POST `/api/students/export.xlsx`新增可选expected_revision及响应X-Data-Revision；新页面传读取版本，冲突409，不传时仍按最新一致范围导出。
+
+JSON操作确认/范围开关严格为布尔值，索引/ID/版本严格为整数，不接受将true当作1、将字符串yes当作确认的隐式转换；URL中的数字查询参数仍按常规解析。学号仍是文本且不补齐。新确认输入统一Decimal ROUND_HALF_UP两位小数，导出不重新舍入原已存分值。公式、错误、NaN/Infinity不静默视为缺失。
+
+`staging.py`统一临时对象/时间/必要字段校验与源二进制SHA-256校验。提交成功后的删除权限错误/其他损坏预览不改成保存失败，清理按既有过期机制重试。`request_limits.py`限制实际请求体字节，不依赖Content-Length；分块超限413，非法长度400。
+
+数据库保持schema_version=2，启动按原子事务安装附加剔除INSERT/学号UPDATE触发器，旧程序尝试重建已剔除人员会被数据库拒绝；应用仍在预览和提交时先跳过剔除人员。管理员直接删除标记/恢复备份不属于普通导入保护。确认剔除还复核当前身份和关联记录数量，外部编辑未更新revision也不会按变化后的预览盲删。
+
+导出大量选择/取消/目录ID通过TEMP表参数化逐条插入，避免SQLite参数上限；历史异常先在SQL按实际学号归属及剔除标记筛选，跟进正式项只读必需字段。Excel按班级逐页压缩，行数或已存数值异常会报可读错误，而非生成损坏文件。审查结果与保留边界见 [CODE_REVIEW_REPORT.md](CODE_REVIEW_REPORT.md)。
+
 ## 6. 扩展多考试时不要复用批次代替考试
 
 建议未来新增 `exams(id,name,date,total_score,...)` 和 `student_exam_scores(exam_id,student_id,status,raw_score,score_rate,version,...)`，唯一约束 `(exam_id,student_id)`；成绩批次关联 exam_id。这是未来设计建议，当前包未实现这些表和页面。

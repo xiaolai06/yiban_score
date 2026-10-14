@@ -5,14 +5,15 @@ They deliberately reject encrypted/legacy BIFF files, damaged streams, oversized
 workbooks and unsupported structures rather than guessing students' identifiers.
 """
 from __future__ import annotations
+
 import io
 import math
 import re
 import struct
 import zipfile
 from dataclasses import dataclass, field
-from xml.etree import ElementTree as ET
 from pathlib import PurePosixPath
+from xml.etree import ElementTree as ET
 
 MAX_ROWS = 60000
 MAX_COLS = 160
@@ -56,14 +57,17 @@ class Sheet:
     cols: int = 0
     column_counts: dict[int, int] = field(default_factory=dict)  # CSV structural validation
 
-    def put(self, row: int, col: int, cell: Cell) -> None:
-        if cell.value is None or cell.value == '':
+    def put(self, row: int, col: int, cell: Cell, *, replace: bool = False) -> None:
+        if (cell.value is None or cell.value == '') and not cell.formula and not cell.error:
             return
         if row < 0 or col < 0 or row >= MAX_ROWS or col >= MAX_COLS:
             raise WorkbookError(f'工作表“{self.name}”超出限制：最多 {MAX_ROWS} 行、{MAX_COLS} 列。')
-        if len(self.cells) >= MAX_CELLS:
+        position = (row, col)
+        if position in self.cells and not replace:
+            raise WorkbookError('工作表存在重复单元格坐标，无法可靠绑定学号。')
+        if position not in self.cells and len(self.cells) >= MAX_CELLS:
             raise WorkbookError('工作表有效单元格过多。')
-        self.cells[row, col] = cell
+        self.cells[position] = cell
         self.rows = max(self.rows, row + 1)
         self.cols = max(self.cols, col + 1)
 
@@ -81,6 +85,11 @@ class Sheet:
 
     def cell(self, row: int, col: int) -> Cell:
         return self.cells.get((row, col), Cell(None))
+
+    def has_content(self, row: int) -> bool:
+        return any(cell.text() or cell.formula or cell.error or
+                   isinstance(cell.value, (int, float)) and not math.isfinite(cell.value)
+                   for cell in (self.cell(row, col) for col in range(self.cols)))
 
     def texts(self, row: int) -> list[str]:
         return [self.cell(row, c).text() for c in range(self.cols)]
@@ -266,7 +275,8 @@ def read_xls(data: bytes) -> list[Sheet]:
             chunks = [payload[8:]]
             j = i + 1
             while j < len(globals_) and globals_[j][0] == 0x003C:
-                chunks.append(globals_[j][1]); j += 1
+                chunks.append(globals_[j][1])
+                j += 1
             reader = StringChunks(chunks)
             sst = [reader.unicode() for _ in range(unique)]
     if not bounds or len(bounds) > 50:
@@ -296,7 +306,8 @@ def read_xls(data: bytes) -> list[Sheet]:
                 elif rid == 0x0204:
                     val = StringChunks([p[6:]]).unicode()
                 elif rid == 0x0205:
-                    err = bool(p[7]); val = '#EXCEL_ERROR' if err else bool(p[6])
+                    err = bool(p[7])
+                    val = '#EXCEL_ERROR' if err else bool(p[6])
                 elif rid == 0x0006:
                     if p[12:14] == b'\xff\xff':
                         if p[6] == 0:
@@ -317,7 +328,7 @@ def read_xls(data: bytes) -> list[Sheet]:
                     sh.put(r, c0 + j, Cell(rk_number(p[6 + j * 6:10 + j * 6]), fmt))
             elif rid == 0x0207 and pending_string:
                 r, c, fmt = pending_string
-                sh.put(r, c, Cell(StringChunks([p]).unicode(), fmt, True))
+                sh.put(r, c, Cell(StringChunks([p]).unicode(), fmt, True), replace=True)
                 pending_string = None
             elif rid == 0x00E5:
                 for j in range(struct.unpack_from('<H', p)[0]):
@@ -330,10 +341,19 @@ NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
 REL = '{http://schemas.openxmlformats.org/package/2006/relationships}'
 RID = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'
 
-def xml_parse(data: bytes):
-    if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper():
+class NoDTDTreeBuilder(ET.TreeBuilder):
+    def doctype(self, name, pubid, system):
         raise WorkbookError('不支持带 DTD 或实体的 XML 文件。')
-    return ET.fromstring(data)
+
+
+def xml_parse(data: bytes):
+    # XML declarations may be UTF-16/UTF-32, not just ASCII/UTF-8. Removing
+    # encoding NULs makes the guard effective before any entity expansion.
+    declarations = data.replace(b'\x00', b'').upper()
+    if b'<!DOCTYPE' in declarations or b'<!ENTITY' in declarations:
+        raise WorkbookError('不支持带 DTD 或实体的 XML 文件。')
+    parser = ET.XMLParser(target=NoDTDTreeBuilder())
+    return ET.fromstring(data, parser=parser)
 
 def coordinate(value: str) -> tuple[int, int]:
     m = re.fullmatch(r'([A-Z]{1,3})([1-9][0-9]*)', value)
@@ -351,7 +371,11 @@ def read_xlsx(data: bytes) -> list[Sheet]:
             raise WorkbookError('工作簿解压后过大，最多支持 100 MB。')
         if any(f.flag_bits & 1 for f in infos):
             raise WorkbookError('不支持加密的工作簿。')
+        if any(f.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED) for f in infos):
+            raise WorkbookError('不支持此工作簿压缩方式，请在Excel/WPS中另存为普通XLSX。')
         names = set(z.namelist())
+        if len(names) != len(infos):
+            raise WorkbookError('工作簿包含重名文件，无法可靠读取。')
         if 'xl/workbook.xml' not in names:
             raise WorkbookError('这不是标准的 .xlsx 工作簿。')
         wb = xml_parse(z.read('xl/workbook.xml'))
@@ -395,8 +419,12 @@ def read_xlsx(data: bytes) -> list[Sheet]:
                 raise WorkbookError('工作表关系不完整。')
             sh = Sheet(name=item.attrib['name'], hidden=item.attrib.get('state', 'visible') != 'visible')
             root = xml_parse(z.read(target))
+            coordinates = set()
             for c in root.findall(f'{NS}sheetData/{NS}row/{NS}c'):
                 r, col = coordinate(c.attrib['r'])
+                if (r, col) in coordinates:
+                    raise WorkbookError('工作表存在重复单元格坐标，无法可靠绑定学号。')
+                coordinates.add((r, col))
                 typ = c.attrib.get('t', 'n')
                 node = c.find(NS + 'v')
                 text = node.text if node is not None else None
@@ -419,7 +447,8 @@ def read_xlsx(data: bytes) -> list[Sheet]:
                 ends = m.attrib['ref'].split(':')
                 a, b = coordinate(ends[0]), coordinate(ends[-1])
                 sh.merges.append((a[0], b[0], a[1], b[1]))
-            sh.finish(); sheets.append(sh)
+            sh.finish()
+            sheets.append(sh)
         return sheets
 
 def read_workbook(data: bytes, filename: str) -> list[Sheet]:

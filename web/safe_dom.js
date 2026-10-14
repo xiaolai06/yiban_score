@@ -39,7 +39,12 @@ function key(node) {
   for(const attribute of ['data-student-row','data-person-key','data-row-key']){
     if(node.hasAttribute(attribute))return `${attribute}:${node.getAttribute(attribute)}`;
   }
-  if(node.hasAttribute('data-action'))return `action:${node.dataset.action}:${node.dataset.id||node.dataset.student||node.dataset.key||node.dataset.sort||node.dataset.scope||''}`;
+  if(node.hasAttribute('data-action')){
+    // Same action may have different format/kind/operation buttons. Preserve
+    // each node (and keyboard focus) instead of converting a sibling in place.
+    const identity=['id','student','key','sort','scope','kind','format','operation'].map(name=>node.dataset[name]||'');
+    return `action:${node.dataset.action}:${JSON.stringify(identity)}`;
+  }
   return null;
 }
 function compatible(a,b) {

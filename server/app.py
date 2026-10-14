@@ -17,19 +17,41 @@ from typing import Annotated, Literal
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+)
 from starlette.background import BackgroundTask
 
-from .database import STUDENT_SELECT, bump_revision, connection, init_db, revision
+from .database import (
+    STUDENT_SELECT,
+    bump_revision,
+    connection,
+    init_db,
+    read_snapshot,
+    revision,
+)
 from .excel_reader import WorkbookError, read_workbook
 from .grade_rules import (
     NUMERIC_SCORE_SQL,
     QUALIFIED_SQL,
     UNQUALIFIED_SQL,
     VALID_SCORE_SQL,
+    round_score,
 )
+from .request_limits import RequestBodyLimit
 from .roster import FIELDS, REQUIRED, STATUSES, sheet_info, validate_rows
 from .score_export import build_score_workbook
+from .staging import (
+    cleanup_upload,
+    read_stage_record,
+    read_upload_bytes,
+    unlink_quietly,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_UPLOAD = 20 * 1024 * 1024
@@ -39,19 +61,19 @@ PREVIEW_TTL = 3600
 class PreviewInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     upload_id: str
-    sheet_index: int = Field(ge=0, le=49)
-    header_row: int = Field(ge=1, le=60000)
-    mapping: dict[str, int]
+    sheet_index: StrictInt = Field(ge=0, le=49)
+    header_row: StrictInt = Field(ge=1, le=60000)
+    mapping: dict[str, StrictInt]
     mode: Literal['update', 'skip'] = 'update'
 
 class CommitInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     preview_id: str
-    allow_name_changes: bool = False
+    allow_name_changes: StrictBool = False
 
 class StudentPatch(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    version: int = Field(ge=1)
+    version: StrictInt = Field(ge=1)
     status: Literal['待录入', '已录入', '未开始', '进行中', '已完成', '缺考', '免考']
     score_rate: float | None = Field(default=None, ge=0, le=100)
 
@@ -66,18 +88,19 @@ class StudentPatch(BaseModel):
 class StudentFilterInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     q: str = Field(default='', max_length=120)
-    college_id: int | None = Field(default=None, ge=1)
-    class_id: int | None = Field(default=None, ge=1)
+    college_id: StrictInt | None = Field(default=None, ge=1)
+    class_id: StrictInt | None = Field(default=None, ge=1)
     status: str = ''
     score_filter: Literal['all', 'recorded', 'missing', 'below_90'] = 'all'
 
 
 class ScoreExportInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    all_students: bool = False
-    college_ids: list[int] = Field(default_factory=list, max_length=500)
-    class_ids: list[int] = Field(default_factory=list, max_length=2000)
-    below_90: bool = False
+    all_students: StrictBool = False
+    college_ids: list[StrictInt] = Field(default_factory=list, max_length=500)
+    class_ids: list[StrictInt] = Field(default_factory=list, max_length=2000)
+    below_90: StrictBool = False
+    expected_revision: StrictInt | None = Field(default=None, ge=0)
     student_ids: list[str] = Field(default_factory=list, max_length=25000)
     excluded_student_ids: list[str] = Field(default_factory=list, max_length=25000)
     student_filter: StudentFilterInput | None = None
@@ -143,6 +166,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                   docs_url=None, redoc_url=None, openapi_url='/api/openapi.json')
     app.state.db_path = db_path
     app.state.public_host = public_host
+    app.add_middleware(RequestBodyLimit, max_bytes=MAX_UPLOAD+1024*1024)
 
     @app.middleware('http')
     async def local_boundary(request: Request, call_next):
@@ -164,12 +188,6 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                 return JSONResponse({'detail': '拒绝跨站写入请求。'}, status_code=403)
             if request.headers.get('x-requested-with') != 'StudentScore':
                 return JSONResponse({'detail': '写入请求缺少应用标记。'}, status_code=403)
-            content_length = request.headers.get('content-length', '0')
-            try:
-                if int(content_length) > MAX_UPLOAD + 1024 * 1024:
-                    return JSONResponse({'detail': '上传内容超过 20 MB。'}, status_code=413)
-            except ValueError:
-                return JSONResponse({'detail': '请求长度无效。'}, status_code=400)
         response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'no-referrer'
@@ -197,26 +215,19 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         return stage / f'{token}{suffix}'
 
     def read_stage(token: str, suffix: str) -> dict:
-        path = stage_path(token, suffix)
-        if not path.exists():
-            raise HTTPException(404, '导入预览不存在，请重新上传或生成预览。')
-        try:
-            payload = json.loads(path.read_text(encoding='utf-8'))
-        except (OSError, ValueError) as exc:
-            raise HTTPException(400, '临时导入记录无法读取，请重新上传。') from exc
-        if time.time() - payload['created_at'] > PREVIEW_TTL:
-            path.unlink(missing_ok=True)
-            raise HTTPException(410, '导入预览已过期（有效期 60 分钟），请重新生成。')
-        return payload
+        return read_stage_record(stage_path(token, suffix), suffix, PREVIEW_TTL)
 
     def read_upload(upload_id: str):
         meta = read_stage(upload_id, '.upload.json')
-        path = stage_path(upload_id, '.bin')
-        if not path.exists():
-            raise HTTPException(404, '临时文件已清理，请重新上传。')
-        return meta, read_workbook(path.read_bytes(), meta['filename'])
+        data = read_upload_bytes(stage_path(upload_id, '.bin'), meta)
+        return meta, read_workbook(data, meta['filename'])
 
     def stats_data(con) -> dict:
+        # Reuse a caller's transaction, or create a read snapshot for all four queries.
+        with read_snapshot(con):
+            return stats_snapshot(con)
+
+    def stats_snapshot(con) -> dict:
         row = dict(con.execute(f'''SELECT COUNT(*) AS students,
             COUNT(DISTINCT s.class_id) AS classes, COUNT(DISTINCT c.college_id) AS colleges,
             COUNT(CASE WHEN {QUALIFIED_SQL} THEN 1 END) AS qualified,
@@ -235,11 +246,11 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         with connection(db_path) as con:
             return {'ok': True, 'storage': 'SQLite', 'database_file': db_path.name,
                     'local_only': public_host is None, 'schema_version': 2, 'directory_api_version': 4, 'revision': revision(con),
-                    'statuses': STATUSES, 'max_upload_mb': 20, 'preview_ttl_minutes': 60, 'roster_removal_api_version': 1, 'score_export_workbook_version': 3, 'follow_up_api_version': 1}
+                    'statuses': STATUSES, 'max_upload_mb': 20, 'preview_ttl_minutes': 60, 'roster_removal_api_version': 1, 'score_export_workbook_version': 3, 'follow_up_api_version': 1, 'read_snapshot_api_version': 1}
 
     @app.get('/api/stats')
     def stats():
-        with connection(db_path) as con:
+        with connection(db_path) as con, read_snapshot(con):
             result = stats_data(con)
             result['colleges_detail'] = [dict(r) for r in con.execute(f'''
                 SELECT co.id, co.name, COUNT(s.student_id) AS students,
@@ -253,7 +264,8 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
 
     @app.get('/api/hierarchy')
     def hierarchy():
-        with connection(db_path) as con:
+        with connection(db_path) as con, read_snapshot(con):
+            rev = revision(con)
             rows = con.execute('''SELECT co.id AS college_id,co.name AS college_name,
                 c.id,c.name,COUNT(s.student_id) AS count,COUNT(s.score_rate) AS recorded
                 FROM colleges co JOIN classes c ON c.college_id=co.id
@@ -263,7 +275,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                 co = colleges.setdefault(r['college_id'], {'id': r['college_id'], 'name': r['college_name'], 'count': 0, 'classes': []})
                 co['count'] += r['count']
                 co['classes'].append({'id': r['id'], 'name': r['name'], 'count': r['count'], 'recorded': r['recorded']})
-            return {'colleges': list(colleges.values())}
+            return {'colleges': list(colleges.values()), 'revision': rev}
 
     @app.post('/api/imports/analyze')
     def analyze(file: Annotated[UploadFile, File()]):
@@ -432,15 +444,8 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             except Exception:
                 con.rollback()
                 raise
-        # No original Excel file is retained after a successful commit.
-        for suffix in ('.bin', '.upload.json'):
-            stage_path(payload['upload_id'], suffix).unlink(missing_ok=True)
-        for f in stage.glob('*.preview.json'):
-            try:
-                if json.loads(f.read_text(encoding='utf-8')).get('upload_id') == payload['upload_id']:
-                    f.unlink(missing_ok=True)
-            except (OSError, ValueError):
-                pass
+        # Cleanup cannot turn an already committed transaction into a failed response.
+        cleanup_upload(stage, payload['upload_id'], ('.bin', '.upload.json'), '.preview.json')
         return result
 
     @app.get('/api/imports')
@@ -502,20 +507,28 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         parts, params = [], []
         with connection(db_path) as con:
             con.execute('BEGIN')
-            for table, ids in [('colleges', selection.college_ids), ('classes', selection.class_ids)]:
-                if ids:
-                    placeholders = ','.join('?' for _ in ids)
-                    found = con.execute(f'SELECT COUNT(*) FROM {table} WHERE id IN ({placeholders})', ids).fetchone()[0]
-                    if found != len(ids):
-                        raise HTTPException(404, '选中的学院或班级已不存在，请刷新目录后重新选择。')
+            rev = revision(con)
+            if selection.expected_revision is not None and selection.expected_revision != rev:
+                raise HTTPException(409, '导出前数据已有变更，请刷新成绩列表并重新核对选择。')
+            # Single-row inserts avoid SQLite's per-statement variable limit even
+            # with 25,000 selected/excluded IDs or 2,000 classes.
+            con.execute('CREATE TEMP TABLE export_scope(kind TEXT,id INTEGER,PRIMARY KEY(kind,id))')
+            con.executemany('INSERT INTO export_scope VALUES(?,?)',
+                            [('college', value) for value in selection.college_ids]+
+                            [('class', value) for value in selection.class_ids])
+            college_count = con.execute("SELECT COUNT(*) FROM colleges WHERE id IN (SELECT id FROM export_scope WHERE kind='college')").fetchone()[0]
+            class_count = con.execute("SELECT COUNT(*) FROM classes WHERE id IN (SELECT id FROM export_scope WHERE kind='class')").fetchone()[0]
+            if college_count != len(selection.college_ids) or class_count != len(selection.class_ids):
+                raise HTTPException(404, '选中的学院或班级已不存在，请刷新目录后重新选择。')
+            con.execute('CREATE TEMP TABLE export_students(student_id TEXT PRIMARY KEY)')
+            con.execute('CREATE TEMP TABLE export_excluded(student_id TEXT PRIMARY KEY)')
+            con.executemany('INSERT INTO export_students VALUES(?)', [(value,) for value in selection.student_ids])
+            con.executemany('INSERT INTO export_excluded VALUES(?)', [(value,) for value in selection.excluded_student_ids])
             if selection.student_ids:
-                placeholders = ','.join('?' for _ in selection.student_ids)
-                found = con.execute('SELECT COUNT(*) FROM students WHERE student_id IN (' + placeholders + ')',
-                                    selection.student_ids).fetchone()[0]
+                found = con.execute('SELECT COUNT(*) FROM students WHERE student_id IN (SELECT student_id FROM export_students)').fetchone()[0]
                 if found != len(selection.student_ids):
                     raise HTTPException(404, '勾选的学生已不存在，请刷新成绩列表后重新选择。')
-                parts.append('s.student_id IN (' + placeholders + ')')
-                params.extend(selection.student_ids)
+                parts.append('s.student_id IN (SELECT student_id FROM export_students)')
             elif selection.student_filter is not None:
                 filters = selection.student_filter
                 where, filter_params = build_filter(filters.q, filters.college_id, filters.class_id,
@@ -524,15 +537,9 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                     parts.append('(' + where.removeprefix(' WHERE ') + ')')
                     params.extend(filter_params)
                 if selection.excluded_student_ids:
-                    parts.append('s.student_id NOT IN (' + ','.join('?' for _ in selection.excluded_student_ids) + ')')
-                    params.extend(selection.excluded_student_ids)
+                    parts.append('s.student_id NOT IN (SELECT student_id FROM export_excluded)')
             elif not selection.all_students:
-                scopes = []
-                for column, ids in [('c.college_id', selection.college_ids), ('s.class_id', selection.class_ids)]:
-                    if ids:
-                        scopes.append(f"{column} IN ({','.join('?' for _ in ids)})")
-                        params.extend(ids)
-                parts.append('(' + ' OR '.join(scopes) + ')')
+                parts.append("(c.college_id IN (SELECT id FROM export_scope WHERE kind='college') OR s.class_id IN (SELECT id FROM export_scope WHERE kind='class'))")
             if selection.below_90:
                 parts.append(UNQUALIFIED_SQL)
             where = ' WHERE ' + ' AND '.join(parts) if parts else ''
@@ -540,11 +547,15 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             con.rollback()
         if not rows:
             raise HTTPException(400, '所选范围没有不合格人员（低于90分或无有效成绩）。' if selection.below_90 else '所选范围没有学生。')
-        content = build_score_workbook(rows)
+        try:
+            content = build_score_workbook(rows)
+        except ValueError as exc:
+            raise HTTPException(413, str(exc)) from exc
         filename = 'scores-unqualified.xlsx' if selection.below_90 else 'scores-selected.xlsx'
         return Response(content, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         headers={'Content-Disposition': f'attachment; filename="{filename}"',
-                                 'X-Export-Students': str(len(rows)), 'X-Export-Workbook-Version': '3'})
+                                 'X-Export-Students': str(len(rows)), 'X-Export-Workbook-Version': '3',
+                                 'X-Data-Revision': str(rev)})
 
     @app.get('/api/students')
     def students(q: str = Query('', max_length=120), college_id: int | None = Query(None, ge=1),
@@ -556,6 +567,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         where, params = build_filter(q, college_id, class_id, status, score_filter)
         with connection(db_path) as con:
             con.execute('BEGIN')
+            rev = revision(con)
             aggregate = dict(con.execute(f'''SELECT COUNT(*) AS total, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled,
                 COUNT(CASE WHEN {QUALIFIED_SQL} THEN 1 END) AS qualified,
                 COUNT(CASE WHEN {NUMERIC_SCORE_SQL} AND s.score_rate = 90 THEN 1 END) AS at_90,
@@ -573,7 +585,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             items = [dict(r) for r in con.execute(STUDENT_SELECT + where + f' ORDER BY {ordering} LIMIT ? OFFSET ?',
                                                  params + [page_size, (actual_page - 1) * page_size])]
             con.rollback()
-            return dict(aggregate, page=actual_page, page_size=page_size, pages=pages, items=items)
+            return dict(aggregate, page=actual_page, page_size=page_size, pages=pages, items=items, revision=rev)
 
     @app.get('/api/students/{student_id}')
     def student_detail(student_id: str):
@@ -585,7 +597,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
 
     @app.patch('/api/students/{student_id}')
     def update_student(student_id: str, patch: StudentPatch):
-        score_rate = None if patch.score_rate is None else round(patch.score_rate, 2)
+        score_rate = None if patch.score_rate is None else round_score(patch.score_rate)
         with connection(db_path) as con:
             try:
                 con.execute('BEGIN IMMEDIATE')
@@ -620,9 +632,9 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                 finally:
                     destination.close()
             return FileResponse(path, media_type='application/vnd.sqlite3',
-                                filename='students-backup.sqlite3', background=BackgroundTask(path.unlink, missing_ok=True))
+                                filename='students-backup.sqlite3', background=BackgroundTask(unlink_quietly, path))
         except Exception:
-            path.unlink(missing_ok=True)
+            unlink_quietly(path)
             raise
 
     @app.get('/')

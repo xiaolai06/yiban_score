@@ -114,3 +114,16 @@ CREATE TABLE IF NOT EXISTS removal_score_batches (
     score_batch_id INTEGER NOT NULL REFERENCES score_batches(id),
     PRIMARY KEY(removal_batch_id, score_batch_id)
 );
+-- Enforce the exclusion invariant even if an old application tries to re-import.
+CREATE TRIGGER IF NOT EXISTS block_excluded_student_insert
+BEFORE INSERT ON students
+WHEN EXISTS (SELECT 1 FROM excluded_students WHERE student_id=NEW.student_id)
+BEGIN
+    SELECT RAISE(ABORT, 'Excluded student cannot be re-created');
+END;
+CREATE TRIGGER IF NOT EXISTS block_excluded_student_identifier_update
+BEFORE UPDATE OF student_id ON students
+WHEN EXISTS (SELECT 1 FROM excluded_students WHERE student_id=NEW.student_id)
+BEGIN
+    SELECT RAISE(ABORT, 'Excluded student cannot be re-created');
+END;

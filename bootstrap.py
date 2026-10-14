@@ -1,5 +1,6 @@
 """Create an isolated environment once, then launch the local application."""
 from __future__ import annotations
+
 import hashlib
 import os
 import subprocess
@@ -19,7 +20,7 @@ def main() -> int:
         print('Creating the isolated .venv environment ...', flush=True)
         try:
             venv.EnvBuilder(with_pip=True).create(env)
-        except Exception as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             print(f'Environment creation failed: {exc}')
             print('On Ubuntu, install python3-venv; on Windows, install the complete Python distribution.')
             return 1
@@ -27,7 +28,7 @@ def main() -> int:
     stamp = env / '.student-score-requirements'
     if not stamp.exists() or stamp.read_text(encoding='utf-8').strip() != signature:
         print('Installing application dependencies. Internet is needed for this first setup only.', flush=True)
-        result = subprocess.run([str(python), '-m', 'pip', 'install', '-r', str(ROOT / 'requirements.txt')], cwd=ROOT)
+        result = subprocess.run([str(python), '-m', 'pip', 'install', '-r', str(ROOT / 'requirements.txt')], cwd=ROOT, check=False)
         if result.returncode:
             print('Installation failed. Check the network / pip proxy settings, then start again.')
             return result.returncode

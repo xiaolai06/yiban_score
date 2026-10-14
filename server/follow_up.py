@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import HTTPException, Query, Response
 
-from .database import STUDENT_SELECT, connection, revision
+from .database import connection, revision
 from .grade_rules import has_numeric_score, is_qualified
 from .score_api import saved_record
 from .score_issues import ISSUE_LABELS, filtered_groups, issue_snapshot
@@ -44,7 +44,10 @@ def student_item(student):
 
 def snapshot(con, q, college_id, class_id):
     # The scope is chosen by actual roster IDs, never guessed from source text.
-    scoped = [dict(row) for row in con.execute(STUDENT_SELECT + '''
+    scoped = [dict(row) for row in con.execute('''
+        SELECT s.student_id,s.name,s.class_id,s.status,s.score_rate,
+               c.name AS class_name,c.college_id,co.name AS college_name
+        FROM students s JOIN classes c ON c.id=s.class_id JOIN colleges co ON co.id=c.college_id
         WHERE (? IS NULL OR c.college_id=?) AND (? IS NULL OR s.class_id=?)
         ORDER BY co.id,c.id,s.student_id''', (college_id, college_id, class_id, class_id))]
     by_id = {student['student_id']: student for student in scoped}
@@ -58,11 +61,9 @@ def snapshot(con, q, college_id, class_id):
         if any(kind != 'at_90' for kind in student['categories']):
             counts['pending'] += 1  # De-duplicate overlapping missing/progress/low categories.
     issues = []
-    excluded = {row[0] for row in con.execute('SELECT student_id FROM excluded_students')}
-    for group in filtered_groups(issue_snapshot(con, saved_record), q, 'all'):
+    groups = issue_snapshot(con, saved_record, college_id=college_id, class_id=class_id, exclude_removed=True)
+    for group in filtered_groups(groups, q, 'all'):
         sid = group['student_id']
-        if sid in excluded:
-            continue
         current = by_id.get(sid)
         if (college_id is not None or class_id is not None) and current is None:
             continue  # Unknown/out-of-scope IDs cannot reliably be assigned to this class.

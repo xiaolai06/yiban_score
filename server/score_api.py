@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
-from .database import STUDENT_SELECT, bump_revision, connection, revision
+from .database import STUDENT_SELECT, bump_revision, connection, read_snapshot, revision
 from .score_import import (
     ACTIONS,
     FIELDS,
@@ -27,6 +27,7 @@ from .score_import import (
     score_sheet_info,
 )
 from .score_issues import install_issue_routes
+from .staging import cleanup_upload, read_upload_bytes
 
 ISSUES = {'unmatched', 'invalid', 'name_conflict', 'duplicate_conflict'}
 
@@ -34,28 +35,28 @@ ISSUES = {'unmatched', 'invalid', 'name_conflict', 'duplicate_conflict'}
 class ScorePreview(BaseModel):
     model_config = ConfigDict(extra='forbid')
     upload_id: str
-    sheet_index: int = Field(default=0, ge=0, le=49)
-    header_row: int = Field(default=1, ge=1, le=60000)
-    mapping: dict[str, int]
+    sheet_index: StrictInt = Field(default=0, ge=0, le=49)
+    header_row: StrictInt = Field(default=1, ge=1, le=60000)
+    mapping: dict[str, StrictInt]
     batch_name: str = Field(min_length=1, max_length=120)
     scale: Literal['percent', 'fraction'] = 'percent'
     zero_policy: Literal['null_unfinished', 'keep'] = 'null_unfinished'
     # Explicit legacy modes remain supported for existing API integrations.
     # The UI and requests without a mode always use incremental highest-score merging.
     update_mode: Literal['keep_highest', 'replace', 'fill_missing'] = 'keep_highest'
-    protect_completed: bool = True
+    protect_completed: StrictBool = True
 
 
 class ScoreCommit(BaseModel):
     model_config = ConfigDict(extra='forbid')
     preview_id: str
-    skip_issues: bool = False
-    save_issues_only: bool = False
+    skip_issues: StrictBool = False
+    save_issues_only: StrictBool = False
 
 
 class RevertInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    confirm: bool = False
+    confirm: StrictBool = False
 
 
 def saved_record(value: str) -> dict:
@@ -75,10 +76,8 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
 
     def read_source(token):
         meta = read_stage(token, '.score-upload.json')
-        path = stage_path(token, '.score.bin')
-        if not path.exists():
-            raise HTTPException(404, '成绩原文件已清理，请重新上传。')
-        sheets, format_info = read_score_file(path.read_bytes(), meta['filename'])
+        data = read_upload_bytes(stage_path(token, '.score.bin'), meta)
+        sheets, format_info = read_score_file(data, meta['filename'])
         return meta, sheets, format_info
 
     def public_batch(row):
@@ -250,20 +249,12 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
             except Exception:
                 con.rollback()
                 raise
-        for suffix in ('.score.bin', '.score-upload.json'):
-            stage_path(preview['upload_id'], suffix).unlink(missing_ok=True)
-        # Only temporary previews are removed; every committed batch/row remains in SQLite.
-        for path in stage.glob('*.score-preview.json'):
-            try:
-                if json.loads(path.read_text(encoding='utf-8')).get('upload_id') == preview['upload_id']:
-                    path.unlink(missing_ok=True)
-            except (ValueError, OSError):
-                pass
+        cleanup_upload(stage, preview['upload_id'], ('.score.bin', '.score-upload.json'), '.score-preview.json')
         return {'ok': True, 'idempotent': False, 'batch': batch}
 
     @app.get('/api/scores/batches')
     def score_batches(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=50)):
-        with connection(db_path) as con:
+        with connection(db_path) as con, read_snapshot(con):
             total = con.execute('SELECT COUNT(*) FROM score_batches').fetchone()[0]
             page = min(page, max(1, (total + page_size - 1) // page_size))
             rows = con.execute('SELECT * FROM score_batches ORDER BY id DESC LIMIT ? OFFSET ?',
@@ -275,7 +266,7 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                    page_size: int = Query(20, ge=1, le=100)):
         if kind not in {'all', 'issues'} | ACTIONS.keys():
             raise HTTPException(400, '筛选类型无效。')
-        with connection(db_path) as con:
+        with connection(db_path) as con, read_snapshot(con):
             batch = con.execute('SELECT * FROM score_batches WHERE id=?', (batch_id,)).fetchone()
             if not batch:
                 raise HTTPException(404, '批次不存在。')

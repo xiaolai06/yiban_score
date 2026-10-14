@@ -95,6 +95,7 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
       else if(S.exportAll||S.exportClasses.size)applyScope(payload);
       else payload.student_filter=selectionFilters(S);
     } else applyScope(payload);
+    if(Number(S.health?.read_snapshot_api_version||0)>=1&&Number.isInteger(S.students.revision))payload.expected_revision=S.students.revision;
     // Choosing an export completes this disclosure interaction. Closing it also
     // prevents the next click from hiding the menu instead of opening it again.
     const menu=document.querySelector('#score-list-tools .export-menu');

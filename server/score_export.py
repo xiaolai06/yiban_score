@@ -24,6 +24,7 @@ PACKAGE_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 TYPE_NS = 'http://schemas.openxmlformats.org/package/2006/content-types'
 HEADERS = ['学号', '姓名', '学院', '班级', '状态', '得分率', '得分']
 SUMMARY_TITLE = '导出说明'
+MAX_WORKSHEET_ROWS = 1_048_576
 SUMMARY_HEADERS = ['统计范围', '学院', '班级', '导出人数', '参与人数', '未参与人数',
                    '参与率', '合格人数（≥90）', '合格率（占参与人数）', '合格占导出人数比例']
 SUMMARY_NOTES = [
@@ -98,12 +99,16 @@ def write_row(data, number, record, column_styles, *, header=False, height=None)
 
 
 def worksheet(rows):
+    if len(rows)+1 > MAX_WORKSHEET_ROWS:
+        raise ValueError('班级记录超过Excel行数上限，请缩小范围或导出CSV。')
     column_styles = [TEXT_STYLE] * 5 + [PERCENT_STYLE, NUMBER_STYLE]
     sheet = base_sheet([22, 18, 32, 30, 14, 14, 14], column_styles)
     data = SubElement(sheet, 'sheetData')
     write_row(data, 1, HEADERS, column_styles, header=True, height=30)
     for number, student in enumerate(rows, 2):
         rate = student['score_rate']
+        if rate is not None and not has_numeric_score(rate):
+            raise ValueError('当前成绩存在无效数值，请先核对，不生成损坏或误导的Excel。')
         values = [student['student_id'], student['name'], student['college_name'],
                   student['class_name'], student['status'], None if rate is None else rate / 100, rate]
         write_row(data, number, values, column_styles)
@@ -112,6 +117,8 @@ def worksheet(rows):
 
 
 def summary_worksheet(groups):
+    if len(groups)+3+len(SUMMARY_NOTES) > MAX_WORKSHEET_ROWS:
+        raise ValueError('班级说明超过Excel行数上限，请缩小导出范围。')
     column_styles = [TEXT_STYLE] * 3 + [NUMBER_STYLE] * 3 + [SUMMARY_PERCENT_STYLE, NUMBER_STYLE,
                                                                      SUMMARY_PERCENT_STYLE, SUMMARY_PERCENT_STYLE]
     sheet = base_sheet([24, 32, 32, 14, 14, 14, 16, 20, 25, 27], column_styles)
@@ -155,17 +162,17 @@ def build_score_workbook(rows):
     used = {SUMMARY_TITLE.casefold()}
     content = io.BytesIO()
     with ZipFile(content, 'w', ZIP_DEFLATED) as archive:
-        pages = []
-        for students in groups.values():
-            first = students[0]
-            title = sheet_title(f"{first['class_name']}-{first['college_name']}", used)
-            pages.append((title, worksheet(students)))
-        pages.append((SUMMARY_TITLE, summary_worksheet(groups)))
-        for i, (title, sheet_content) in enumerate(pages, 1):
+        def add_sheet(i, title, sheet_content):
             SubElement(sheets, 'sheet', name=title, sheetId=str(i), attrib={'r:id': f'rId{i}'})
             SubElement(relationships, 'Relationship', Id=f'rId{i}', Type=f'{REL_NS}/worksheet', Target=f'worksheets/sheet{i}.xml')
             SubElement(types, 'Override', PartName=f'/xl/worksheets/sheet{i}.xml', ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml')
             archive.writestr(f'xl/worksheets/sheet{i}.xml', sheet_content)
+        # Serialize/compress one class at a time instead of retaining all XML pages.
+        for i, students in enumerate(groups.values(), 1):
+            first = students[0]
+            title = sheet_title(f"{first['class_name']}-{first['college_name']}", used)
+            add_sheet(i, title, worksheet(students))
+        add_sheet(len(groups)+1, SUMMARY_TITLE, summary_worksheet(groups))
         SubElement(relationships, 'Relationship', Id='styles', Type=f'{REL_NS}/styles', Target='styles.xml')
         root_rels = Element('Relationships', xmlns=PACKAGE_NS)
         SubElement(root_rels, 'Relationship', Id='workbook', Type=f'{REL_NS}/officeDocument', Target='xl/workbook.xml')

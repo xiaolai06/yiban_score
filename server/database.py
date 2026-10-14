@@ -1,63 +1,86 @@
 from __future__ import annotations
+
 import re
 import sqlite3
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 
 SCHEMA = Path(__file__).with_name('schema.sql').read_text(encoding='utf-8')
 
 
-def init_db(path: Path) -> None:
-    """Initialize V2 or migrate the supplied V1, preserving identifiers/audit.
+def schema_statements(script: str):
+    """Preserve complete SQL statements, including trigger bodies/quoted semicolons."""
+    buffer = []
+    for character in script:
+        buffer.append(character)
+        if character == ';':
+            pending = ''.join(buffer)
+            if sqlite3.complete_statement(pending):
+                yield pending
+                buffer.clear()
+    trailing = re.sub(r'--[^\n]*(?:\n|$)|/\*.*?\*/', '', ''.join(buffer), flags=re.DOTALL)
+    if trailing.strip():
+        raise RuntimeError('数据库结构脚本不完整，未继续迁移。')
 
-    Uses SQLite's generalized ALTER TABLE sequence. The original database gets
-    an online-backup snapshot BEFORE changes. Never changes an unrecognized
-    future schema. Migration, checks and revision bump form one transaction.
+
+def init_db(path: Path) -> None:
+    """Initialize or migrate recognized schemas atomically; preserve V1 backup.
+
+    Unsupported metadata is rejected before persistent journal-mode changes.
+    Exclusion guards are additive, so the public schema_version remains 2.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path, timeout=15)
     try:
-        con.execute('PRAGMA journal_mode=WAL')
         old = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='students'").fetchone()
         meta = con.execute("SELECT 1 FROM sqlite_master WHERE name='metadata'").fetchone()
         if meta:
             version = con.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-            if version and int(version[0])>2:
-                raise RuntimeError('数据库版本高于此程序；为保护数据，请使用匹配版本的软件。')
-        if old and '未开始' not in old[0]:
-            backup_dir=path.parent/'backups';backup_dir.mkdir(exist_ok=True)
-            backup_path=backup_dir/(path.stem+'-before-v2-'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.sqlite3')
-            dest=sqlite3.connect(backup_path)
-            try:con.backup(dest)
-            finally:dest.close()
-            try:backup_path.chmod(0o600)
-            except OSError:pass
-            con.execute('PRAGMA foreign_keys=OFF')
-            con.execute('BEGIN IMMEDIATE')
+            if version and str(version[0]) not in {'1', '2'}:
+                raise RuntimeError('数据库版本不受此程序支持；为保护数据，请使用匹配版本的软件。')
+        con.execute('PRAGMA journal_mode=WAL')
+        migrate = bool(old and '未开始' not in old[0])
+        if migrate:
+            backup_dir = path.parent / 'backups'
+            backup_dir.mkdir(exist_ok=True)
+            stamp = datetime.now().astimezone().strftime('%Y%m%d-%H%M%S-%f')
+            backup_path = backup_dir / f'{path.stem}-before-v2-{stamp}.sqlite3'
+            destination = sqlite3.connect(backup_path)
             try:
-                indexes=con.execute("SELECT sql FROM sqlite_master WHERE tbl_name='students' AND type IN ('index','trigger') AND sql IS NOT NULL").fetchall()
-                new_sql=re.search(r'CREATE TABLE IF NOT EXISTS students \(.*?\n\);',SCHEMA,re.S).group(0)
-                con.execute(new_sql.replace('IF NOT EXISTS students','students_v2_migration'))
-                columns=[r[1] for r in con.execute('PRAGMA table_info(students)')]
-                # The known V1 column names are safe to quote from schema metadata.
-                joined=','.join('"'+c.replace('"','""')+'"' for c in columns)
+                con.backup(destination)
+            finally:
+                destination.close()
+            with suppress(OSError):
+                backup_path.chmod(0o600)
+        con.execute('PRAGMA foreign_keys='+('OFF' if migrate else 'ON'))
+        con.execute('BEGIN IMMEDIATE')
+        try:
+            if migrate:
+                indexes = con.execute("SELECT sql FROM sqlite_master WHERE tbl_name='students' AND type IN ('index','trigger') AND sql IS NOT NULL").fetchall()
+                definition = re.search(r'CREATE TABLE IF NOT EXISTS students \(.*?\n\);', SCHEMA, re.DOTALL)
+                if definition is None:
+                    raise RuntimeError('学生表结构定义缺失，已停止迁移。')
+                con.execute(definition.group(0).replace('IF NOT EXISTS students', 'students_v2_migration'))
+                columns = [record[1] for record in con.execute('PRAGMA table_info(students)')]
+                # Database-owned identifiers are double-quoted; no request text is interpolated.
+                joined = ','.join('"'+column.replace('"', '""')+'"' for column in columns)
                 con.execute(f'INSERT INTO students_v2_migration({joined}) SELECT {joined} FROM students')
                 con.execute('DROP TABLE students')
                 con.execute('ALTER TABLE students_v2_migration RENAME TO students')
-                for (sql,) in indexes:con.execute(sql)
-                for statement in SCHEMA.split(';'):
-                    if statement.strip():con.execute(statement)
+                for (statement,) in indexes:
+                    con.execute(statement)
+            for statement in schema_statements(SCHEMA):
+                con.execute(statement)
+            if migrate:
                 con.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
                 bump_revision(con)
-                if con.execute('PRAGMA foreign_key_check').fetchone():
-                    raise RuntimeError('数据库迁移外键检查失败，已回滚。')
-                con.commit()
-            except Exception:
-                con.rollback();raise
-        else:
-            con.executescript(SCHEMA)
+            if con.execute('PRAGMA foreign_key_check').fetchone():
+                raise RuntimeError('数据库外键检查失败，已回滚初始化/迁移。')
             con.commit()
+        except Exception:
+            con.rollback()
+            raise
         con.execute('PRAGMA foreign_keys=ON')
     finally:
         con.close()
@@ -75,12 +98,34 @@ def connection(path: Path):
         con.close()
 
 
+@contextmanager
+def read_snapshot(con: sqlite3.Connection):
+    owned = not con.in_transaction
+    if owned:
+        con.execute('BEGIN')
+    try:
+        yield con
+    finally:
+        if owned:
+            con.rollback()
+
+
 def revision(con: sqlite3.Connection) -> int:
-    return int(con.execute("SELECT value FROM metadata WHERE key='revision'").fetchone()[0])
+    row = con.execute("SELECT value FROM metadata WHERE key='revision'").fetchone()
+    try:
+        if row is None:
+            raise ValueError('Missing revision')
+        value = int(row[0])
+        if value < 0 or str(value) != str(row[0]):
+            raise ValueError('Invalid revision')
+        return value
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise sqlite3.OperationalError('数据库修订号异常，请检查备份。') from exc
 
 
 def bump_revision(con: sqlite3.Connection) -> None:
-    con.execute("UPDATE metadata SET value=CAST(value AS INTEGER)+1 WHERE key='revision'")
+    # Never silently cast corrupt metadata to zero and invalidate concurrency guards.
+    con.execute("UPDATE metadata SET value=? WHERE key='revision'", (str(revision(con)+1),))
 
 
 STUDENT_SELECT = '''SELECT s.*, c.name AS class_name, c.college_id,

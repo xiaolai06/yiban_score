@@ -10,25 +10,25 @@ from contextlib import suppress
 from typing import Any
 
 from fastapi import HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
-from .database import STUDENT_SELECT, bump_revision, connection, revision
+from .database import STUDENT_SELECT, bump_revision, connection, read_snapshot, revision
 from .roster import LOOKUP, header_key, identifier
 
 
 class RemovalPreview(BaseModel):
     model_config = ConfigDict(extra='forbid')
     upload_id: str
-    sheet_index: int = Field(ge=0, le=49)
-    header_row: int = Field(ge=1, le=60000)
+    sheet_index: StrictInt = Field(ge=0, le=49)
+    header_row: StrictInt = Field(ge=1, le=60000)
 
 
 class RemovalCommit(BaseModel):
     model_config = ConfigDict(extra='forbid')
     preview_id: str
-    confirm: bool = False
+    confirm: StrictBool = False
     confirmation: str = ''
-    expected_count: int = Field(ge=0)
+    expected_count: StrictInt = Field(ge=0)
 
 
 def removal_rows(sheet, header_row) -> dict[str, Any]:
@@ -39,7 +39,7 @@ def removal_rows(sheet, header_row) -> dict[str, Any]:
     rows, errors, seen = [], [], set()
     duplicates = blanks = repeated = source = 0
     for index in range(header_row, sheet.rows):
-        if not any(sheet.cell(index, col).text() for col in range(sheet.cols)):
+        if not sheet.has_content(index):
             blanks += 1
             continue
         cell = sheet.cell(index, 0)
@@ -96,7 +96,7 @@ def install_removal_routes(app, db_path, stage, read_upload, read_stage, stage_p
             score_rows = con.execute('SELECT COUNT(*) FROM score_import_rows WHERE student_id IN (SELECT student_id FROM removal_ids)').fetchone()[0]
             changes = con.execute('SELECT COUNT(*) FROM student_changes WHERE student_id IN (SELECT student_id FROM removal_ids)').fetchone()[0]
             rows = [dict(r, matched=r['student_id'] in existing, **{k: existing.get(r['student_id'], {}).get(k)
-                    for k in ('name', 'college_name', 'class_name', 'status', 'score_rate')}) for r in validated['rows']]
+                    for k in ('name', 'college_name', 'class_name', 'status', 'score_rate', 'version', 'class_id', 'college_id')}) for r in validated['rows']]
             matched = sum(1 for r in rows if r['matched'])
             summary = {k: v for k, v in validated.items() if k not in {'rows', 'errors'}}
             summary.update(unique_ids=len(rows), matched=matched, unmatched=len(rows)-matched,
@@ -140,6 +140,20 @@ def install_removal_routes(app, db_path, stage, read_upload, read_stage, stage_p
                 con.execute('CREATE TEMP TABLE removal_ids(student_id TEXT PRIMARY KEY)')
                 con.executemany('INSERT INTO removal_ids VALUES(?)', [(r['student_id'],) for r in payload['rows']])
                 summary = payload['summary']
+                # Recheck the reviewed identities/counts even if an external DB
+                # editor forgot to bump metadata.revision.
+                current = {row['student_id']: dict(row) for row in con.execute(
+                    STUDENT_SELECT+' WHERE s.student_id IN (SELECT student_id FROM removal_ids)')}
+                for reviewed in payload['rows']:
+                    actual = current.get(reviewed['student_id'])
+                    if reviewed['matched'] != (actual is not None) or actual is not None and any(
+                        key in reviewed and reviewed[key] != actual[key]
+                        for key in ('name','college_name','class_name','status','score_rate','version','class_id','college_id')):
+                        raise HTTPException(409, '剔除对象已发生变化，请重新生成预览；未删除任何人员。')
+                score_count = con.execute('SELECT COUNT(*) FROM score_import_rows WHERE student_id IN (SELECT student_id FROM removal_ids)').fetchone()[0]
+                change_count = con.execute('SELECT COUNT(*) FROM student_changes WHERE student_id IN (SELECT student_id FROM removal_ids)').fetchone()[0]
+                if score_count != summary['score_rows'] or change_count != summary['change_rows']:
+                    raise HTTPException(409, '关联历史记录已有变化，请重新生成剔除预览。')
                 batch_id = con.execute('''INSERT INTO removal_batches(preview_id,filename,sha256,sheet_name,
                     source_rows,unique_ids,deleted_count,unmatched_count,duplicate_rows,score_rows,change_rows)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?)''', (body.preview_id, payload['meta']['filename'],
@@ -187,7 +201,7 @@ def install_removal_routes(app, db_path, stage, read_upload, read_stage, stage_p
 
     @app.get('/api/removals')
     def removal_history(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=50)):
-        with connection(db_path) as con:
+        with connection(db_path) as con, read_snapshot(con):
             total = con.execute('SELECT COUNT(*) FROM removal_batches').fetchone()[0]
             pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, pages)

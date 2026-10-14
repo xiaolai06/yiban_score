@@ -59,6 +59,9 @@ def install_stats_routes(page, mode='legacy'):
                             'items': records[(number - 1) * 100:number * 100]})
 
     page.route('**/api/stats', stats_response)
+    # This synthetic legacy/early-modern service predates hierarchy revisions.
+    # Do not mix its mocked stats revision with the real empty test DB revision.
+    page.route('**/api/hierarchy',lambda route:route.fulfill(json={'colleges':[]}))
     page.route('**/api/students?**', student_response)
     return state
 

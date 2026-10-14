@@ -69,7 +69,7 @@ function preview(G) {
 function success(G) {
   const b=G.committed, added=b.summary.new_scores||0;
   const stats=b.options?.save_issues_only?[[b.summary.issue_rows,'保存异常记录']]:[[added,'新增 / 补录'],[b.updated_count-added,'提高 / 更新'],[b.summary.unchanged+b.summary.protected,'保留不变']];
-  return `<section class="card success-panel"><div class="success-symbol">${icon('check')}</div><h2>${b.options?.save_issues_only?'异常记录已保存，正式成绩未修改':'学生成绩已合并保存'}</h2><p>${h(b.name)} · 批次 #${b.id}</p>
+  return `<section class="card success-panel"><div class="success-symbol">${icon('check')}</div><h2>${b.options?.save_issues_only?'异常记录已保存，正式成绩未修改':'学生成绩已合并保存'}</h2>${G.error?`<div class="info-box warning" role="alert">${h(G.error)}</div>`:''}<p>${h(b.name)} · 批次 #${b.id}</p>
     <div class="success-stats">${stats.map(([value,label])=>`<div><strong>${num(value)}</strong><span>${label}</span></div>`).join('')}</div>
     ${b.summary.issue_rows?`<p class="small-muted">${num(b.summary.issue_rows)} 行异常未写入，原始记录已保留。</p>`:''}
     <div class="success-actions">${b.summary.issue_rows?`<button class="btn secondary" data-action="score-issues-open">${icon('alert')}查看异常人员</button>`:''}<a class="btn primary" href="#scores">查看成绩明细${icon('arrow')}</a><a class="btn secondary" href="/api/scores/batches/${b.id}/export.csv" download>${icon('download')}导出本次记录</a><button class="btn secondary" data-action="score-reset">继续导入成绩</button></div>

@@ -12,9 +12,10 @@ import math
 import re
 import unicodedata
 from collections import Counter, defaultdict
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation
 
 from .excel_reader import MAX_COLS, MAX_ROWS, Cell, Sheet, WorkbookError, read_workbook
+from .grade_rules import round_score
 from .roster import STATUSES, header_key
 
 FIELDS = {'student_id':'学号', 'name':'姓名（仅核对）', 'status':'考试 / 登记状态',
@@ -164,6 +165,8 @@ def clean_status(raw: str) -> str:
 def clean_rate(cell: Cell, scale: str='percent') -> float | None:
     if cell.error or cell.formula or isinstance(cell.value,bool):
         raise ValueError('得分率不能是公式、错误或布尔值。')
+    if isinstance(cell.value,(int,float)) and not math.isfinite(cell.value):
+        raise ValueError('得分率必须是有限数值。')
     text=tidy(cell.text())
     if text.lower() in MISSING:
         return None
@@ -181,17 +184,17 @@ def clean_rate(cell: Cell, scale: str='percent') -> float | None:
             value*=100
         if not value.is_finite() or not 0<=value<=100:
             raise ValueError('得分率超出 0–100%。')
-        return float(value.quantize(Decimal('.01'),rounding=ROUND_HALF_UP))
+        return round_score(value)
     except InvalidOperation:
         raise ValueError('得分率精度异常，请核对原值。') from None
 
 
 def result_rate(cell: Cell) -> float | None:
+    if cell.formula or cell.error:
+        raise ValueError('成绩 / 百分比列不能是公式或错误值。')
     text=tidy(cell.text())
     if text.lower() in MISSING:
         return None
-    if cell.formula or cell.error:
-        raise ValueError('成绩 / 百分比列不能是公式或错误值。')
     match=re.fullmatch(r'(?:[^/%]{1,100}/\s*)?([+]?(?:\d+(?:\.\d*)?|\.\d+)\s*%)', text)
     if not match:
         raise ValueError('成绩 / 百分比必须含明确百分号，例如 92 / 92.0%；不会用斜杠两侧做除法。')
@@ -234,7 +237,7 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
     blank=0
     repeated=0
     for ri in range(header_row,sh.rows):
-        if not any(sh.cell(ri,c).text() for c in range(sh.cols)):
+        if not sh.has_content(ri):
             blank+=1
             continue
         if all(LOOKUP.get(header_key(sh.cell(ri,mapping[k]).text()))==k for k in ('student_id','status')):

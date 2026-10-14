@@ -1,7 +1,9 @@
 """Launch the local app or a loopback-bound HTTPS reverse-proxy backend."""
 from __future__ import annotations
+
 import argparse
 import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -19,6 +21,7 @@ def main() -> None:
         os.environ['STUDENT_DB_PATH'] = str(args.db.resolve())
     try:
         import uvicorn
+
         from server.app import create_app
     except ImportError as exc:
         raise SystemExit('依赖尚未安装。请先运行：python -m pip install -r requirements.txt\n' + str(exc)) from exc
@@ -26,8 +29,8 @@ def main() -> None:
     public_host = os.environ.get('STUDENT_PUBLIC_HOST', '').strip() or None
     try:
         app = create_app(public_host=public_host)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
+    except (ValueError, RuntimeError, sqlite3.DatabaseError) as exc:
+        raise SystemExit('启动未完成，请保留原数据库并检查版本、备份或权限。\n'+str(exc)) from exc
     if public_host:
         print(f'HTTPS 入口：https://{app.state.public_host}')
         print('后端仅监听 127.0.0.1；请通过 Nginx 的 IP 白名单和 HTTPS 访问。')

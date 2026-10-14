@@ -39,7 +39,7 @@ function mappingForm(S) {
 }
 function importSuccess(S) {
   const b = S.committed;
-  return `<div class="success-panel"><div class="success-symbol">${icon('check')}</div><h2>学生名单已写入数据库</h2><p>学院与班级已自动关联，你现在可以查看成绩明细。<br>已有状态和得分率已保留，未删除任何名单外学生。</p><div class="success-stats"><div><strong>${num(b.new_count)}</strong><span>新增学生</span></div><div><strong>${num(b.updated_count)}</strong><span>更新基础信息</span></div><div><strong>${num(b.unchanged_count+b.skipped_count)}</strong><span>保留不变</span></div></div><p class="small-muted">当前数据库：${num(S.stats.colleges)} 个学院 · ${num(S.stats.classes)} 个班级 · ${num(S.stats.students)} 名学生</p><div class="success-actions"><button class="btn primary" data-action="goto-scores">查看成绩明细${icon('arrow')}</button><button class="btn secondary" data-action="reset-import">继续导入名单</button></div></div>`;
+  return `<div class="success-panel"><div class="success-symbol">${icon('check')}</div><h2>学生名单已写入数据库</h2>${S.importError?`<div class="info-box warning" role="alert">${h(S.importError)}</div>`:''}<p>学院与班级已自动关联，你现在可以查看成绩明细。<br>已有状态和得分率已保留，未删除任何名单外学生。</p><div class="success-stats"><div><strong>${num(b.new_count)}</strong><span>新增学生</span></div><div><strong>${num(b.updated_count)}</strong><span>更新基础信息</span></div><div><strong>${num(b.unchanged_count+b.skipped_count)}</strong><span>保留不变</span></div></div><p class="small-muted">当前数据库：${num(S.stats.colleges)} 个学院 · ${num(S.stats.classes)} 个班级 · ${num(S.stats.students)} 名学生</p><div class="success-actions"><button class="btn primary" data-action="goto-scores">查看成绩明细${icon('arrow')}</button><button class="btn secondary" data-action="reset-import">继续导入名单</button></div></div>`;
 }
 function previewView(S) {
   const P=S.preview, s=P.summary;

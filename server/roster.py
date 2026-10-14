@@ -1,10 +1,13 @@
 """Roster mapping and validation. Student numbers are opaque text, never row IDs."""
 from __future__ import annotations
+
 import math
 import re
 import unicodedata
-from collections import Counter
+from typing import Any
+
 from .excel_reader import Cell, Sheet
+from .grade_rules import round_score
 
 STATUSES = ['待录入', '未开始', '进行中', '已完成', '已录入', '缺考', '免考']
 REQUIRED = ['student_id', 'name', 'college', 'class_name']
@@ -60,7 +63,8 @@ def identifier(cell: Cell) -> str:
     if cell.error or cell.formula:
         raise ValueError('学号不能是公式或错误值，请粘贴为文本值。')
     if isinstance(cell.value, bool):
-        raise ValueError('学号不能是布尔值。')
+        # Cell is a valid argument; this is a user-facing invalid field value.
+        raise ValueError('学号不能是布尔值。')  # noqa: TRY004 -- preserve row-validation ValueError contract.
     if isinstance(cell.value, (int, float)):
         if not math.isfinite(cell.value) or not float(cell.value).is_integer():
             raise ValueError('数字型学号必须是整数；建议将学号列设为文本。')
@@ -76,11 +80,13 @@ def identifier(cell: Cell) -> str:
     return text
 
 def rate_value(cell: Cell) -> float | None:
+    if cell.error or cell.formula or isinstance(cell.value, bool):
+        raise ValueError('得分率不能是公式、错误或布尔值。')
+    if isinstance(cell.value, (int, float)) and not math.isfinite(cell.value):
+        raise ValueError('得分率必须是有限数值。')
     text = clean(cell.text())
     if not text:
         return None
-    if cell.error or isinstance(cell.value, bool):
-        raise ValueError('得分率不是有效数值。')
     percent_text = text.endswith(('%', '％'))
     text = text.rstrip('%％').strip()
     try:
@@ -91,7 +97,7 @@ def rate_value(cell: Cell) -> float | None:
         number *= 100
     if not math.isfinite(number) or not 0 <= number <= 100:
         raise ValueError('得分率必须在 0–100% 之间。')
-    return round(number, 2)
+    return round_score(number)
 
 def validate_rows(sheet: Sheet, header_row: int, mapping: dict[str, int]) -> dict:
     if not 1 <= header_row <= sheet.rows:
@@ -108,14 +114,14 @@ def validate_rows(sheet: Sheet, header_row: int, mapping: dict[str, int]) -> dic
     rows, errors, warnings, seen = [], [], [], {}
     total, blank_rows, repeated_headers = 0, 0, 0
     for r in range(header_row, sheet.rows):
-        if not any(sheet.cell(r, c).text() for c in range(sheet.cols)):
+        if not sheet.has_content(r):
             blank_rows += 1
             continue
         if all(LOOKUP.get(header_key(sheet.cell(r, mapping[k]).text())) == k for k in REQUIRED):
             repeated_headers += 1
             continue
         total += 1
-        obj = {k: clean(sheet.cell(r, c).text()) for k, c in mapping.items()}
+        obj: dict[str, Any] = {k: clean(sheet.cell(r, c).text()) for k, c in mapping.items()}
         row_errors = []
         try:
             obj['student_id'] = identifier(sheet.cell(r, mapping['student_id']))

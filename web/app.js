@@ -9,6 +9,7 @@ import {enhanceControls, closeControl, captureControl, restoreControl} from './c
 import {installDirectoryController, DIRECTORY_UPDATE_MESSAGE} from './directory_controller.js';
 import {loadOverviewStats} from './overview_stats.js';
 import {completeDirectoryStatistics} from './directory_stats.js';
+import {readBaseSnapshot} from './read_snapshots.js';
 
 const emptyStats = {students:0,colleges:0,classes:0,recorded:0,qualified:0,average_rate:null,statuses:[],colleges_detail:[]};
 const emptyList = {items:[],total:0,recorded:0,qualified:null,below_90:null,settled:0,average_rate:null,page:1,page_size:10,pages:1};
@@ -27,7 +28,7 @@ const S = {
   directoryOutdated:false,directoryStatsRecovered:false,directoryStatsError:'',treeSort:{key:'name',order:'asc'},
   overviewSort:{key:'students',order:'desc'},overviewError:'',
 };
-let toastTimer, searchTimer, treeTimer, listSequence=0;
+let toastTimer, searchTimer, treeTimer, listSequence=0,baseSequence=0,bootSequence=0;
 let renderedView=null,listAbort=null;
 const studentCache=new Map();
 const CACHE_TTL=15000;
@@ -45,7 +46,7 @@ async function api(path, options={}) {
   }
   let payload;
   try { payload = await response.json(); }
-  catch { throw new Error('服务返回了无法识别的响应，请检查启动窗口。'); }
+  catch(error) {if(error.name==='AbortError')throw error;throw new Error('服务返回了无法识别的响应，请检查启动窗口。');}
   if (!response.ok) {
     const detail=payload.detail;
     const message=Array.isArray(detail)?detail.map(x=>`${x.loc?.slice(1).join('.') || '参数'}：${x.msg}`).join('；'):detail;
@@ -106,7 +107,10 @@ function render() {
   restoreControl(controlSnapshot);
 }
 async function refreshBase({includeHistory=true}={}) {
-  const [stats,hierarchy,history] = await Promise.all([api('/api/stats'),api('/api/hierarchy'),includeHistory?api('/api/imports'):null]);
+  const seq=++baseSequence;
+  const snapshot=await readBaseSnapshot(api,{includeHistory,isCurrent:()=>seq===baseSequence});
+  if(!snapshot)return;
+  const {stats,hierarchy,history}=snapshot;
   if(S.stats.revision!==stats.revision)studentCache.clear();
   S.stats=stats;S.hierarchy=hierarchy.colleges;if(history)S.history=history.items;
   const classes=new Set(S.hierarchy.flatMap(co=>co.classes.map(cl=>cl.id)));
@@ -114,13 +118,17 @@ async function refreshBase({includeHistory=true}={}) {
   else for(const id of S.exportClasses)if(!classes.has(id))S.exportClasses.delete(id);
   if(S.view==='overview'){
     S.overviewError='';
-    try {S.stats=await loadOverviewStats(api,stats);}
-    catch(error){S.overviewError=error.message;}
+    try {
+      const completed=await loadOverviewStats(api,stats);
+      if(seq===baseSequence&&S.view==='overview')S.stats=completed;
+    } catch(error){if(seq===baseSequence&&S.view==='overview')S.overviewError=error.message;}
   }
 }
 async function initialize() {
+  const seq=++bootSequence;
   try {
     const [health]=await Promise.all([api('/api/health'),refreshBase()]);
+    if(seq!==bootSequence)return;
     S.health=health;
     S.directoryOutdated=Number(S.health.directory_api_version||0)<4;
     if(S.view==='score-import')await scoreController.history();
@@ -128,6 +136,7 @@ async function initialize() {
     render();
     if (S.view==='scores') await loadStudents();
   } catch(e) {
+    if(seq!==bootSequence)return;
     mountHTML(document.getElementById('app'),`<div class="boot"><span class="boot-mark">学</span><h1>服务未连接</h1><p>${h(e.message)}</p><button class="btn primary" data-action="retry">重新连接</button></div>`);
   }
 }
@@ -213,7 +222,9 @@ async function commitImport() {
   try {
     const result=await api('/api/imports/commit',{method:'POST',body:JSON.stringify({preview_id:S.preview.preview_id,allow_name_changes:S.allowNames})});
     S.committed=result.batch;S.upload=null;S.preview=null;
-    await refreshBase();
+    if(result.stats)S.stats=result.stats;
+    try{await refreshBase();}
+    catch(e){throw new Error(`名单已保存，但目录刷新失败：${e.message}。请刷新后核对，勿重复导入。`);}
     if (S.hierarchy.length) S.openColleges.add(S.hierarchy[0].id);
     toast('名单已写入 SQLite 数据库。');
     window.scrollTo({top:0,behavior:'smooth'});
@@ -243,6 +254,13 @@ async function loadStudents({refresh=false}={}) {
     const [list]=await Promise.all([api(`/api/students?${qs}`,{signal}),refresh?refreshBase({includeHistory:false}):null]);
     let result=list;
     if (seq!==listSequence) return;
+    if(Number.isInteger(result.revision)&&result.revision!==S.stats.revision){
+      await refreshBase({includeHistory:false});
+      if(seq!==listSequence)return;
+      if(result.revision!==S.stats.revision)result=await api(`/api/students?${qs}`,{signal});
+      if(seq!==listSequence)return;
+      if(result.revision!==S.stats.revision)throw new Error('刷新期间名单持续变化，请再次读取，未混用不同版本的统计。');
+    }
     const missingStats=['qualified','below_90','at_90'].some(key=>result[key]===undefined)||!Number.isInteger(result.valid_scores??result.settled);
     if(missingStats||S.directoryOutdated){
       try {
@@ -259,7 +277,7 @@ async function loadStudents({refresh=false}={}) {
     S.directoryOutdated=Number(S.health?.directory_api_version||0)<4||missingStats;
     if(S.exportAllStudents)S.selectedStudentTotal=result.total;
     if(!missingStats&&!S.directoryOutdated){
-      studentCache.set(cacheKey,{data:result,revision:S.stats.revision,time:Date.now()});
+      studentCache.set(cacheKey,{data:result,revision:result.revision??S.stats.revision,time:Date.now()});
       if(studentCache.size>30)studentCache.delete(studentCache.keys().next().value);
     }
   } catch(e) {
@@ -288,15 +306,18 @@ async function saveStudent(form) {
     document.getElementById('edit-error').textContent='得分率必须为 0–100 的数值。';return;
   }
   S.saving=true;
+  let persisted=false;
   const submit=document.getElementById('save-student');submit.disabled=true;submit.textContent='正在保存…';
   try {
     await api(`/api/students/${encodeURIComponent(S.editing.student_id)}`,{method:'PATCH',body:JSON.stringify({version:S.editing.version,status,score_rate:score})});
+    persisted=true;
     document.getElementById('student-dialog').close();S.editing=null;
     directoryController.clearStudentSelection();
     await refreshBase();await loadStudents();toast('修改已保存，刷新页面后仍然有效。');
   } catch(e) {
-    const error=document.getElementById('edit-error');if(error) error.textContent=e.message;
-    toast(e.message,true);
+    const message=persisted?`修改已保存，但列表刷新失败：${e.message}。请刷新核对，勿重复保存。`:e.message;
+    const error=document.getElementById('edit-error');if(error) error.textContent=message;
+    toast(message,true);
   } finally {
     S.saving=false;
     if(submit.isConnected){submit.disabled=false;mountHTML(submit,icon('check')+'保存修改');}
