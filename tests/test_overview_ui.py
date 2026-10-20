@@ -18,11 +18,11 @@ def overview_url(ui_url, browser):
         rows = [HEADERS]
         specs = [
             ('测试甲学院', [(100, '已完成'), (90, '已完成'), (None, '待录入'),
-                          (0, '已完成'), (89.99, '已完成')], 2),
+                          (0, '已完成'), (59.99, '已完成')], 2),
             ('测试乙学院', [(99, '已完成'), (95, '已完成'), (90, '进行中'),
                           (92, '未开始')], 1),
             ('测试丙学院', [(None, '待录入'), (None, '待录入'), (None, '待录入')], 3),
-            ('测试丁学院<svg onload=alert(1)>', [(80, '已完成')], 1),
+            ('测试丁学院<svg onload=alert(1)>', [(50, '已完成')], 1),
         ]
         sid = 0
         for college, students, classes in specs:
@@ -59,11 +59,13 @@ def test_overview_counts_sort_navigation_and_readability(browser, overview_url, 
         page.locator('.overview-table').wait_for()
         page.wait_for_load_state('networkidle')
         playwright.expect(page).to_have_title('数据总览 · 学绩')
-        assert page.locator('.metrics .metric-value').all_text_contents() == ['13', '4', '7', '6']
+        assert page.locator('.metrics .metric-value').all_text_contents() == ['13', '4', '7', '7']
         assert '平均' not in page.locator('#main').inner_text()
         assert page.locator('#main .page-heading, #main a[download], #main h1').count() == 0
         assert page.locator('.overview-table th').all_text_contents() == [
-            '学院名称', '班级数', '学生人数', '已录入人数', '合格人数']
+            '学院名称', '班级数', '学生人数', '已完成人数', '合格人数']
+        assert page.locator('.metrics .metric-label').last.inner_text() == '已完成人数'
+        assert page.locator('.overview-table tbody td:nth-child(4)').all_text_contents() == ['4', '2', '0', '1']
         assert page.locator('.overview-table .qualified-count').all_text_contents() == ['2', '4', '0', '0']
         assert page.locator('.overview-status .distribution-label strong').all_text_contents() == [
             '4 人', '1 人', '1 人', '7 人', '0 人', '0 人', '0 人']
@@ -96,7 +98,7 @@ def test_overview_counts_sort_navigation_and_readability(browser, overview_url, 
             assert right['y'] >= left['y'] + left['height']
         page.screenshot(path=str(tmp_path / f'overview-populated-{width}.png'), full_page=True)
 
-        for key, column in [('students', 2), ('classes', 1), ('recorded', 3), ('qualified', 4)]:
+        for key, column in [('students', 2), ('classes', 1), ('completed', 3), ('qualified', 4)]:
             button = page.locator(f'#overview-sort-{key}')
             button.click()
             th = page.locator('.overview-table th').nth(column)
@@ -145,15 +147,15 @@ def test_overview_refreshes_counts_after_edit(browser, overview_url):
         student = page.request.get(overview_url + '/api/students/000002').json()
         response = page.request.patch(overview_url + '/api/students/000002',
                                       headers={'X-Requested-With': 'StudentScore'}, data={
-                                          'version': student['version'], 'status': '已完成', 'score_rate': 89.99,
+                                          'version': student['version'], 'status': '已完成', 'score_rate': None,
                                       })
         assert response.ok
         page.locator('[data-nav="import"]').click()
         page.locator('[data-nav="overview"]').click()
-        playwright.expect(page.locator('.metrics .metric-value').last).to_have_text('5')
+        playwright.expect(page.locator('.metrics .metric-value').last).to_have_text('6')
         row = page.locator('.overview-table tbody tr').filter(has_text='测试甲学院')
         playwright.expect(row.locator('.qualified-count')).to_have_text('1')
         page.reload()
-        playwright.expect(page.locator('.metrics .metric-value').last).to_have_text('5')
+        playwright.expect(page.locator('.metrics .metric-value').last).to_have_text('6')
     finally:
         page.close()

@@ -36,7 +36,7 @@ def directory_url(tmp_path_factory):
         con.execute("INSERT INTO colleges(id,name) VALUES (1,'测试学院甲'),(2,'测试学院乙')")
         con.execute("INSERT INTO classes(id,college_id,name) VALUES (1,1,'测试一班'),(2,1,'测试二班'),(3,2,'测试三班')")
         for i in range(1, 36):
-            status, rate = '已完成', 86.0
+            status, rate = '已完成', 56.0
             if i == 2:
                 rate = 0.0
             elif i == 3:
@@ -48,7 +48,7 @@ def directory_url(tmp_path_factory):
             elif i == 6:
                 status, rate = '已完成', None
             elif i == 7:
-                rate = 86.75
+                rate = 56.75
             class_id = 1 if i <= 15 else 2 if i <= 30 else 3
             # HTML-looking source data must stay text, not executable markup.
             name = '<img src=x onerror=alert(1)>' if i == 8 else f'测试学生{i:02}'
@@ -94,7 +94,7 @@ def test_populated_directory_layout(browser, directory_url, tmp_path, width):
         capacity = int(match.group(1))
         pages = math.ceil(35 / capacity)
         playwright.expect(rows).to_have_count(capacity)
-        playwright.expect(rows.nth(0).locator('.score-value')).to_have_text('86分')
+        playwright.expect(rows.nth(0).locator('.score-value')).to_have_text('56分')
         if capacity >= 2:
             playwright.expect(rows.nth(1).locator('.score-value')).to_have_text('0分')
         if capacity >= 3:
@@ -106,7 +106,7 @@ def test_populated_directory_layout(browser, directory_url, tmp_path, width):
             playwright.expect(rows.nth(3).locator('.rate-value')).to_have_attribute('title','暂存分值，尚未结算')
             playwright.expect(rows.nth(4).locator('.rate-value')).to_have_attribute('title','暂存分值，尚未结算')
         if capacity >= 7:
-            playwright.expect(rows.nth(6).locator('.score-value')).to_have_text('86.75分')
+            playwright.expect(rows.nth(6).locator('.score-value')).to_have_text('56.75分')
         assert page.locator('#main select:visible').count() == 0
         assert page.locator('#status-filter-trigger, #score-filter-trigger, #page-size-trigger').count() == 3
         assert page.locator('.student-cell img').count() == 0
@@ -153,7 +153,7 @@ def test_selection_paging_filters_and_averages(browser, directory_url):
         playwright.expect(page.locator('h1 .count-pill')).to_have_text('总人数 35 人')
         playwright.expect(qualified).to_have_text('0人')
         playwright.expect(settled).to_have_text('31人')
-        playwright.expect(average).to_have_text('83.25%')
+        playwright.expect(average).to_have_text('54.22%')
         page.locator('#page-jump').fill('2')
         page.locator('#page-jump-form button').click()
         playwright.expect(page.locator('.page-number')).to_have_text(f'2 / {pages}')
@@ -167,7 +167,7 @@ def test_selection_paging_filters_and_averages(browser, directory_url):
         page.locator('[data-action="select-class"][data-id="1"]').click()
         playwright.expect(page.locator('h1 .count-pill')).to_have_text('总人数 15 人')
         playwright.expect(settled).to_have_text('11人')
-        playwright.expect(average).to_have_text('78.25%')
+        playwright.expect(average).to_have_text('50.98%')
         page.locator('#status-filter-trigger').click()
         page.get_by_role('option', name='未开始', exact=True).click()
         playwright.expect(settled).to_have_text('0人')
@@ -203,7 +203,7 @@ def test_score_read_failure_can_retry(browser, directory_url):
         page.unroute('**/api/students?*', fail)
         page.locator('.empty [data-action="refresh-students"]').click()
         playwright.expect(page.locator('.score-table-scroll')).to_have_attribute('aria-busy', 'false')
-        playwright.expect(page.locator('.students-table .score-value').first).to_have_text('86分')
+        playwright.expect(page.locator('.students-table .score-value').first).to_have_text('56分')
         playwright.expect(page.locator('#page-jump')).to_be_enabled()
     finally:
         page.close()
@@ -359,8 +359,14 @@ def test_individual_and_all_filtered_student_selection(browser, directory_url, t
         page.wait_for_load_state('networkidle')
         assert page.locator('.list-tools [data-action="clear-filters"]').count() == 0
         assert page.locator('h1 .count-pill b').evaluate('(el) => parseFloat(getComputedStyle(el).fontSize)') >= 24
+        # Isolate cross-page selection from the independently tested auto-resize
+        # workflow: responsive footer wrapping can legitimately change capacity.
+        page.locator('#page-size-trigger').click()
+        page.get_by_role('option', name='10 条 / 页', exact=True).click()
+        playwright.expect(page.locator('#page-size')).to_have_value('10')
+        playwright.expect(page.locator('.students-table tbody tr')).to_have_count(10)
         first_id = page.locator('[data-student-row]').first.get_attribute('data-student-row')
-        page.locator('[data-action="check-student"]').first.click()
+        page.locator(f'[data-action="check-student"][data-student="{first_id}"]').click()
         playwright.expect(page.locator('[data-action="check-all-students"]')).to_have_attribute('aria-checked', 'mixed')
         playwright.expect(page.locator('[data-scope="all"]')).to_have_attribute('aria-checked', 'false')
         assert downloaded_students(page, tmp_path, 'score-export-students', 'one.xlsx') == {first_id}
@@ -368,7 +374,8 @@ def test_individual_and_all_filtered_student_selection(browser, directory_url, t
         page.wait_for_load_state('networkidle')
         second_id = page.locator('[data-student-row]').first.get_attribute('data-student-row')
         assert second_id != first_id
-        page.locator('[data-action="check-student"]').first.click()
+        page.locator(f'[data-action="check-student"][data-student="{second_id}"]').click()
+        playwright.expect(page.locator('.student-selection-summary')).to_contain_text('已勾选 2 人')
         assert downloaded_students(page, tmp_path, 'score-export-students', 'two.xlsx') == {first_id, second_id}
         page.locator('[data-action="check-all-students"]').click()
         page.wait_for_load_state('networkidle')
@@ -407,7 +414,7 @@ def test_current_scope_export_is_available_without_extra_checkboxes(browser, dir
         page.close()
 
 
-def test_positive_grade_statistics_below_90_filter_and_sorting(browser, directory_url):
+def test_positive_grade_statistics_below_60_filter_and_sorting(browser, directory_url):
     page = browser.new_page(viewport={'width': 1440, 'height': 1000})
     headers = {'X-Requested-With': 'StudentScore'}
     student_url = directory_url + '/api/students/2026000009'
@@ -417,9 +424,9 @@ def test_positive_grade_statistics_below_90_filter_and_sorting(browser, director
         page.goto(directory_url + '/#scores')
         page.wait_for_load_state('networkidle')
         playwright.expect(page.locator('[data-stat="qualified"]')).to_have_text('1人')
-        playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('34人')
+        playwright.expect(page.locator('[data-stat="below-60"]')).to_have_text('34人')
         playwright.expect(page.locator('[data-stat="settled"]')).to_have_text('31人')
-        playwright.expect(page.locator('[data-stat="average"]')).to_have_text('83.67%')
+        playwright.expect(page.locator('[data-stat="average"]')).to_have_text('55.6%')
         assert page.locator('.directory-service-alert').count() == 0
         page.locator('[data-action="tree-sort"][data-sort="count"]').click()
         page.locator('[data-action="tree-sort"][data-sort="count"]').click()
@@ -433,13 +440,13 @@ def test_positive_grade_statistics_below_90_filter_and_sorting(browser, director
         page.locator('#score-filter-trigger').click()
         page.get_by_role('option', name='不合格（含无成绩）', exact=True).click()
         playwright.expect(page.locator('[data-stat="qualified"]')).to_have_text('0人')
-        playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('34人')
+        playwright.expect(page.locator('[data-stat="below-60"]')).to_have_text('34人')
         playwright.expect(page.locator('[data-stat="settled"]')).to_have_text('30人')
-        playwright.expect(page.locator('[data-stat="average"]')).to_have_text('83.16%')
+        playwright.expect(page.locator('[data-stat="average"]')).to_have_text('54.16%')
         playwright.expect(page.locator('.page-range')).to_contain_text('共 34 条')
         page.locator('[data-action="select-college"][data-id="1"]').click()
         page.locator('[data-action="select-class"][data-id="1"]').click()
-        playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('14人')
+        playwright.expect(page.locator('[data-stat="below-60"]')).to_have_text('14人')
     finally:
         current = page.request.get(student_url).json()
         assert page.request.patch(student_url, headers=headers, data={'version': current['version'], 'status': before['status'], 'score_rate': before['score_rate']}).ok
@@ -456,7 +463,7 @@ def test_old_backend_does_not_fake_zero_statistics_or_hide_export_failure(browse
         def old_statistics(route):
             response = route.fetch()
             payload = response.json()
-            for key in ['qualified', 'below_90', 'at_90']:
+            for key in ['qualified', 'below_60', 'at_60']:
                 payload.pop(key)
             route.fulfill(response=response, json=payload)
         page.route('**/api/students?*', old_statistics)
@@ -464,7 +471,7 @@ def test_old_backend_does_not_fake_zero_statistics_or_hide_export_failure(browse
         page.goto(directory_url + '/#scores')
         page.wait_for_load_state('networkidle')
         playwright.expect(page.locator('[data-stat="qualified"]')).to_have_text('1人')
-        playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('34人')
+        playwright.expect(page.locator('[data-stat="below-60"]')).to_have_text('34人')
         playwright.expect(page.locator('.directory-service-alert')).to_contain_text('补算统计')
         playwright.expect(page.locator('.directory-service-alert')).to_contain_text('旧后端')
         page.locator('.export-menu summary').click()
@@ -484,7 +491,7 @@ def test_legacy_statistics_read_every_page_and_verify_revision(browser, director
         page.goto(directory_url)
         result = page.evaluate('''async () => {
             const {completeDirectoryStatistics} = await import('/static/directory_stats.js');
-            const rows = Array.from({length:205},(_,i)=>({student_id:String(i),score_rate:[0,89,90,99][i%4],status:i%10===0?'进行中':'已完成'}));
+            const rows = Array.from({length:205},(_,i)=>({student_id:String(i),score_rate:[0,59.99,60,90][i%4],status:i%10===0?'进行中':'已完成'}));
             const settled = rows.filter(row=>row.status==='已完成');
             const scans = []; let healthCalls=0;
             const api = async path => {
@@ -495,7 +502,7 @@ def test_legacy_statistics_read_every_page_and_verify_revision(browser, director
                 return {items:rows.slice((page-1)*size,page*size),total:205,recorded:205,settled:settled.length,page,page_size:size,pages:Math.ceil(205/size)};
             };
             const data = await completeDirectoryStatistics(api,'score_filter=all&page_size=7&page=2');
-            return {data,scans,expected:{qualified:rows.filter(row=>row.score_rate>=90).length,below_90:rows.filter(row=>row.score_rate<90).length,at_90:rows.filter(row=>row.score_rate===90).length}};
+            return {data,scans,expected:{qualified:rows.filter(row=>row.score_rate>=60).length,below_60:rows.filter(row=>row.score_rate<60).length,at_60:rows.filter(row=>row.score_rate===60).length}};
         }''')
         assert result['scans'] == [1, 2, 3, 1, 2, 3]
         assert len(result['data']['items']) == 7
@@ -530,9 +537,9 @@ def test_unqualified_filter_export_and_row_selection_include_no_scores(browser, 
     try:
         page.goto(directory_url + '/#scores')
         page.wait_for_load_state('networkidle')
-        playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('35人')
+        playwright.expect(page.locator('[data-stat="below-60"]')).to_have_text('35人')
         playwright.expect(page.locator('[data-stat="settled"]')).to_have_text('31人')
-        playwright.expect(page.locator('[data-stat="average"]')).to_have_text('83.25%')
+        playwright.expect(page.locator('[data-stat="average"]')).to_have_text('54.22%')
         page.locator('#score-filter-trigger').click()
         page.get_by_role('option', name='不合格（含无成绩）', exact=True).click()
         page.wait_for_load_state('networkidle')
@@ -572,8 +579,8 @@ def test_v2_backend_never_silently_exports_the_old_smaller_unqualified_list(brow
         page.route('**/api/students?*', legacy_counts)
         page.goto(directory_url + '/#scores')
         page.wait_for_load_state('networkidle')
-        playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('35人')
-        playwright.expect(page.locator('.directory-service-alert')).to_contain_text('统一≥90合格')
+        playwright.expect(page.locator('[data-stat="below-60"]')).to_have_text('35人')
+        playwright.expect(page.locator('.directory-service-alert')).to_contain_text('统一≥60合格')
         page.locator('.export-menu summary').click()
         page.locator('[data-action="score-export-below"]').click()
         playwright.expect(page.locator('#toast')).to_contain_text('Ctrl+C')
@@ -590,7 +597,7 @@ def test_v2_backend_never_silently_exports_the_old_smaller_unqualified_list(brow
         page.locator('#scores-update-status [data-action="refresh-students"]').click()
         playwright.expect(page.locator('.directory-service-alert')).to_have_count(0)
         playwright.expect(page.locator('.score-table-scroll')).to_have_attribute('aria-busy','false')
-        playwright.expect(page.locator('[data-stat="below-90"]')).to_have_text('35人')
+        playwright.expect(page.locator('[data-stat="below-60"]')).to_have_text('35人')
         expected = {f'202600{i:04}' for i in range(1, 36)}
         assert downloaded_students(page, tmp_path, 'score-export-below', 'new-rule.xlsx') == expected
         assert len(exported) == 1

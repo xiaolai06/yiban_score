@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS students (
     score_rate REAL DEFAULT NULL CHECK(score_rate IS NULL OR (score_rate >= 0 AND score_rate <= 100)),
     score_batch_id INTEGER DEFAULT NULL REFERENCES score_batches(id),
     score_imported_at TEXT DEFAULT NULL,
+    exam_started_at TEXT DEFAULT NULL,
+    exam_finished_at TEXT DEFAULT NULL,
+    answer_duration_seconds INTEGER DEFAULT NULL CHECK(answer_duration_seconds IS NULL OR (typeof(answer_duration_seconds)='integer' AND answer_duration_seconds>=0)),
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))

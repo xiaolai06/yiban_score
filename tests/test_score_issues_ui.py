@@ -204,7 +204,11 @@ def test_issue_refresh_retains_people_search_and_scroll(browser, ui_url):
         save_extra(page, ui_url, [[f'STABLE{i:03}', '完整显示的异常学生姓名', '已完成', 80] for i in range(25)])
         page.goto(ui_url + '/#score-import')
         page.locator('[data-action="score-issues-open"]').click()
-        page.locator('#issue-search').fill('STABLE')
+        # The previous unfiltered page can also contain 20 rows. Wait for the
+        # debounced search itself before intercepting only the explicit refresh.
+        with page.expect_response(lambda response: '/api/scores/issues?' in response.url and 'q=STABLE' in response.url):
+            page.locator('#issue-search').fill('STABLE')
+        playwright.expect(page.locator('.issue-table-scroll')).to_have_attribute('aria-busy', 'false')
         playwright.expect(page.locator('[data-person-key]')).to_have_count(20)
         page.evaluate("""() => { window.savedIssue = {
             table: document.querySelector('.issue-table-scroll table'),

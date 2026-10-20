@@ -1,25 +1,25 @@
-import {h,num,percent,icon,blank} from './components.js';
+import {h,num,percent,duration,examTimeTitle,icon,blank} from './components.js';
 import {updateHTML} from './safe_dom.js';
 import {enhanceControls,closeControl,captureControl,restoreControl} from './custom_controls.js';
 
-const labels={pending:'全部待跟进',missing:'未录入成绩',not_started:'未开始',in_progress:'进行中',completed_low:'已完成低于90',other_low:'其他低分需核对',at_90:'恰好90（已合格）',issues:'历史异常核对'};
-const qualification=row=>row.qualified===null?'非正式在册人员':row.qualified?'已合格（≥90）':'不合格（无数值或<90）';
+const labels={pending:'全部待跟进',missing:'未录入成绩',not_started:'未开始',in_progress:'进行中',completed_low:'已完成低于60',other_low:'其他低分需核对',at_60:'恰好60（已合格）',issues:'历史异常核对'};
+const qualification=row=>row.qualified===null?'非正式在册人员':row.qualified?'已合格（≥60）':'不合格（无数值或<60）';
 function view(R){
   const D=R.data,disabled=R.loading||R.exporting||!!R.error||!D?.total;
-  const notes=R.kind==='issues'?'历史异常仅供人工核对，不代表尚未解决，不计入正式待跟进人数。学院/班级范围仅含可绑定当前在册学号的异常；无法绑定归属的记录仅在全校范围显示。':R.kind==='at_90'?'恰好90已合格，本分类仅供边界核对，不单独计入待跟进总人数；其中未开始/进行中的人员仍需跟进考试进度。':'待跟进总人数按人员去重，分类可能交叉，不能直接相加。合格分数与考试进度分开：≥90已合格，但未开始/进行中仍需跟进。';
+  const notes=R.kind==='issues'?'历史异常仅供人工核对，不代表尚未解决，不计入正式待跟进人数。学院/班级范围仅含可绑定当前在册学号的异常；无法绑定归属的记录仅在全校范围显示。':R.kind==='at_60'?'恰好60已合格，本分类仅供及格边界核对，不单独计入待跟进总人数；其中未开始/进行中的人员仍需跟进考试进度。':'待跟进总人数按人员去重，分类可能交叉，不能直接相加。合格分数与考试进度分开：≥60已合格，但未开始/进行中仍需跟进。';
   const statusText=R.loading?'正在更新，暂时保留上次结果':R.error?(D?'操作未成功，已保留上次读取结果；刷新成功前不能导出。':'尚未获得有效数据'):D?`筛选范围内在册 ${num(D.scope_students)} 人 · 待跟进 ${num(D.counts.pending)} 人 · 数据版本 ${D.revision}`:'尚未获得有效数据';
   let content=R.error?blank('清单读取失败',R.error):blank('正在读取清单','请稍候。');
   if(D){
-    content=D.items.length?`<div class="table-scroll"><table class="issue-table follow-table"><caption class="sr-only">${h(labels[D.kind])}，范围${h(R.scopeName)}</caption><thead><tr><th>学号</th><th>姓名</th><th>学院 / 班级</th><th>当前状态</th><th>当前得分率</th><th>合格情况</th><th>分类 / 跟进原因</th>${D.kind==='issues'?'<th>历史最高记录分值</th><th>异常历史</th>':''}</tr></thead><tbody>${D.items.map(row=>`<tr data-row-key="${h(row.key)}"><td class="mono">${h(row.student_id||'学号无效 / 未填写')}</td><td class="issue-person-name"><b>${h(row.name||'未填写')}</b></td><td class="issue-person-name">${h(row.college_name)}<div class="cell-secondary">${h(row.class_name)}</div></td><td>${h(row.status)}</td><td class="rate-value">${percent(row.score_rate)}</td><td><span class="badge ${row.qualified?'success':'neutral'}">${qualification(row)}</span></td><td class="issue-reasons">${h(row.category_labels.join('；'))}</td>${D.kind==='issues'?`<td>${percent(row.historical_rate)}<div class="cell-secondary">历史记录，不作正式成绩</div></td><td class="issue-reasons">${h(row.reasons.join('；'))}<div class="cell-secondary">${num(row.occurrence_count)}次 · ${num(row.batch_count)}批</div></td>`:''}</tr>`).join('')}</tbody></table></div>`:blank('当前分类没有记录','可切换分类或调整搜索；空清单不代表缺考。');
+    content=D.items.length?`<div class="table-scroll"><table class="issue-table follow-table"><caption class="sr-only">${h(labels[D.kind])}，范围${h(R.scopeName)}</caption><thead><tr><th>学号</th><th>姓名</th><th>学院 / 班级</th><th>当前状态</th><th>当前得分率</th><th>答题时长</th><th>合格情况</th><th>分类 / 跟进原因</th>${D.kind==='issues'?'<th>历史最高记录分值</th><th>异常历史</th>':''}</tr></thead><tbody>${D.items.map(row=>`<tr data-row-key="${h(row.key)}"><td class="mono">${h(row.student_id||'学号无效 / 未填写')}</td><td class="issue-person-name"><b>${h(row.name||'未填写')}</b></td><td class="issue-person-name">${h(row.college_name)}<div class="cell-secondary">${h(row.class_name)}</div></td><td>${h(row.status)}</td><td class="rate-value">${percent(row.score_rate)}</td><td class="duration-cell" title="${h(examTimeTitle(row))}">${duration(row.answer_duration_seconds)}</td><td><span class="badge ${row.qualified?'success':'neutral'}">${qualification(row)}</span></td><td class="issue-reasons">${h(row.category_labels.join('；'))}</td>${D.kind==='issues'?`<td>${percent(row.historical_rate)}<div class="cell-secondary">历史记录，不作正式成绩</div></td><td class="issue-reasons">${h(row.reasons.join('；'))}<div class="cell-secondary">${num(row.occurrence_count)}次 · ${num(row.batch_count)}批</div></td>`:''}</tr>`).join('')}</tbody></table></div>`:blank('当前分类没有记录','可切换分类或调整搜索；空清单不代表缺考。');
     content+=`<div class="pagination"><span>共 ${num(D.total)} ${D.kind==='issues'?'个历史汇总项':'名学生'}</span><div class="page-controls"><button class="btn secondary small" data-action="follow-prev" ${R.loading||D.page<=1?'disabled':''}>上一页</button><span class="page-number">${D.page} / ${D.pages}</span><button class="btn secondary small" data-action="follow-next" ${R.loading||D.page>=D.pages?'disabled':''}>下一页</button></div></div>`;
   }
-  return `<div class="dialog-header"><div><h2 id="follow-up-title">待跟进清单</h2><p>范围：${h(R.scopeName)} · 独立于成绩页状态/得分筛选</p></div><button class="icon-btn" data-action="follow-close" aria-label="关闭待跟进清单">${icon('close')}</button></div><div class="issue-toolbar follow-toolbar"><div class="search-box">${icon('search')}<input id="follow-search" type="search" aria-label="搜索待跟进人员" placeholder="搜索学号、姓名或班级" maxlength="120" value="${h(R.q)}"></div><button class="btn secondary small" data-action="follow-refresh" ${R.loading?'disabled':''}>${icon('refresh')}刷新</button><button class="btn secondary small" data-action="follow-export" data-format="xlsx" ${disabled?'disabled':''}>${icon('download')}Excel</button><button class="btn secondary small" data-action="follow-export" data-format="csv" ${disabled?'disabled':''}>CSV</button></div><div class="follow-tabs" role="group" aria-label="待跟进分类">${Object.entries(labels).map(([kind,label])=>`<button id="follow-kind-${kind}" class="tab ${kind===R.kind?'active':''}" aria-pressed="${kind===R.kind}" data-action="follow-kind" data-kind="${kind}">${h(label)}<span>${D?num(D.counts[kind]):'—'}</span></button>`).join('')}</div><div class="issue-summary"><span>${h(notes)}</span><span role="status" aria-live="polite">${h(statusText)}</span>${R.error?`<span role="alert" class="update-error">${h(R.error)}<button class="btn secondary small" data-action="follow-refresh">重新读取</button></span>`:''}</div><div class="issue-dialog-content" id="follow-content" aria-busy="${R.loading}">${content}</div><div class="dialog-footer"><span class="small-muted">只读分类与导出，不修改分数、进度或学生资料；0分不自动认定为实际缺考。</span><button class="btn secondary" data-action="follow-close">关闭</button></div>`;
+  return `<div class="dialog-header"><div><h2 id="follow-up-title">待跟进清单</h2><p>范围：${h(R.scopeName)} · 独立于成绩页状态/得分筛选</p></div><button class="icon-btn" data-action="follow-close" aria-label="关闭待跟进清单">${icon('close')}</button></div><div class="issue-toolbar follow-toolbar"><div class="search-box">${icon('search')}<input id="follow-search" type="search" aria-label="搜索待跟进人员" placeholder="搜索学号、姓名或班级" maxlength="120" value="${h(R.q)}"></div><button class="btn secondary small" data-action="follow-refresh" ${R.loading?'disabled':''}>${icon('refresh')}刷新</button><button class="btn secondary small" data-action="follow-export" data-format="xlsx" ${disabled?'disabled':''}>${icon('download')}Excel</button><button class="btn secondary small" data-action="follow-export" data-format="csv" ${disabled?'disabled':''}>CSV</button></div><div class="follow-tabs" role="group" aria-label="待跟进分类">${Object.entries(labels).map(([kind,label])=>`<button id="follow-kind-${kind}" class="tab ${kind===R.kind?'active':''}" aria-pressed="${kind===R.kind}" data-action="follow-kind" data-kind="${kind}">${h(label)}<span>${D?num(D.counts[kind]):'—'}</span></button>`).join('')}</div><div class="issue-summary"><span>${h(notes)}</span>${D&&R.timeSupported===false?'<span class="follow-time-note">兼容旧版服务：未提供答题时间时显示“—”，成绩查看与原格式导出正常可用。</span>':''}<span role="status" aria-live="polite">${h(statusText)}</span>${R.error?`<span role="alert" class="update-error">${h(R.error)}<button class="btn secondary small" data-action="follow-refresh">重新读取</button></span>`:''}</div><div class="issue-dialog-content" id="follow-content" aria-busy="${R.loading}">${content}</div><div class="dialog-footer"><span class="small-muted">只读分类与导出，不修改分数、进度或学生资料；0分不自动认定为实际缺考。</span><button class="btn secondary" data-action="follow-close">关闭</button></div>`;
 }
 
 export function installFollowUp(S,{api,toast}){
   const dialog=document.createElement('dialog');dialog.id='follow-up-dialog';dialog.className='issue-dialog follow-dialog';dialog.setAttribute('aria-labelledby','follow-up-title');
   document.body.append(dialog);
-  const R={kind:'pending',q:'',scope:{},scopeName:'全校',data:null,error:'',loading:false,exporting:false};
+  const R={kind:'pending',q:'',scope:{},scopeName:'全校',data:null,error:'',loading:false,exporting:false,timeSupported:true};
   let sequence=0,abort,timer,opener,exportSequence=0,exportAbort;
   function render(){
     const controls=captureControl(dialog),active=document.activeElement,id=active?.id,position=active?.selectionStart;
@@ -38,9 +38,10 @@ export function installFollowUp(S,{api,toast}){
     try{
       const health=await api('/api/health',{signal});
       if(seq!==sequence||!dialog.open)return;
-      if(Number(health.follow_up_api_version||0)<1)throw new Error('当前后端尚未加载待跟进接口。请在启动窗口按 Ctrl+C 重启网站，再按 Ctrl+F5 刷新。');
+      const version=Number(health.follow_up_api_version||0);
+      if(!Number.isFinite(version)||version<3)throw new Error('当前后端尚未加载待跟进接口。请在启动窗口按 Ctrl+C 重启网站，再按 Ctrl+F5 刷新。');
       const data=await api(`/api/follow-up?${params}`,{signal});
-      if(seq===sequence&&dialog.open)R.data=data;
+      if(seq===sequence&&dialog.open){R.data=data;R.timeSupported=version>=4;}
     }catch(e){if(e.name!=='AbortError'&&seq===sequence&&dialog.open)R.error=e.message;}
     finally{if(seq===sequence&&dialog.open){R.loading=false;render();}}
   }
@@ -54,12 +55,13 @@ export function installFollowUp(S,{api,toast}){
     try{
       const response=await fetch(`/api/follow-up/export.${format}?${qs}`,{cache:'no-store',credentials:'same-origin',signal});
       if(!response.ok){const error=await response.json();throw new Error(typeof error.detail==='string'?error.detail:'清单导出失败。');}
-      if(Number(response.headers.get('X-Follow-Up-Api-Version')||0)<1)throw new Error('清单导出接口版本不匹配，请重启服务后刷新。');
+      const exportVersion=Number(response.headers.get('X-Follow-Up-Api-Version')||0);
+      if(!Number.isFinite(exportVersion)||exportVersion<3)throw new Error('清单导出接口版本不匹配，请重启服务后刷新。');
       const blob=await response.blob();
       if(job!==exportSequence||!dialog.open)return;
       const url=URL.createObjectURL(blob),link=document.createElement('a');
       link.href=url;link.download=`待跟进-${labels[kind]}.${format}`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
-      toast(`已导出 ${response.headers.get('X-Export-Records')} 条${labels[kind]}记录，包含当前筛选全部页。`);
+      toast(`已导出 ${response.headers.get('X-Export-Records')} 条${labels[kind]}记录，包含当前筛选全部页。${exportVersion<4?'本次兼容旧版格式，不含答题时间。':''}`);
     }catch(e){if(e.name!=='AbortError'&&job===exportSequence&&dialog.open){R.error=e.message;toast(e.message,true);}}
     finally{if(job===exportSequence){R.exporting=false;if(dialog.open)render();}}
   }

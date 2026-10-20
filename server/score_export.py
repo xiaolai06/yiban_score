@@ -7,6 +7,7 @@ from collections import defaultdict
 from xml.etree.ElementTree import Element, SubElement, tostring
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from .exam_time import format_duration
 from .grade_rules import has_numeric_score, is_qualified
 from .xlsx_styles import (
     HEADER_STYLE,
@@ -22,19 +23,19 @@ SHEET_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 PACKAGE_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
 TYPE_NS = 'http://schemas.openxmlformats.org/package/2006/content-types'
-HEADERS = ['学号', '姓名', '学院', '班级', '状态', '得分率', '得分']
+HEADERS = ['学号', '姓名', '学院', '班级', '状态', '得分率', '得分', '开始时间', '结束时间', '答题时长']
 SUMMARY_TITLE = '导出说明'
 MAX_WORKSHEET_ROWS = 1_048_576
 SUMMARY_HEADERS = ['统计范围', '学院', '班级', '导出人数', '参与人数', '未参与人数',
-                   '参与率', '合格人数（≥90）', '合格率（占参与人数）', '合格占导出人数比例']
+                   '参与率', '合格人数（≥60）', '合格率（占参与人数）', '合格占导出人数比例']
 SUMMARY_NOTES = [
     ('统计范围', '只统计本文件实际导出的学生，不是全库、整校或当前页面人数；各班级行也仅统计本次导出的人员。'),
     ('参与人数', '得分率为大于0且不超过100的有效数值即算参与。空值、0或无有效数值得分率均算未参与，不把空值改成0。'),
     ('参与率', '参与人数 ÷ 导出人数；未参与人数 = 导出人数 − 参与人数。'),
-    ('合格人数', '得分率达到90（含90），即90≤得分率≤100的有效数值，计入合格人数。'),
+    ('合格人数', '得分率达到60（含60），即60≤得分率≤100的有效数值，计入合格人数。'),
     ('合格率', '合格人数 ÷ 参与人数；参与人数为0时显示“—”，表示没有可计算的分母，不表示0%合格率。'),
     ('合格占导出人数比例', '合格人数 ÷ 导出人数，与“合格率（占参与人数）”使用不同分母。'),
-    ('状态与网站口径', '全站与本表统一按有效数值得分率≥90（含90）判断合格，不因考试进度排除高分。未开始/进行中另列待跟进；已结算成绩及平均值仍排除未完成暂存分值。'),
+    ('状态与网站口径', '全站与本表统一按有效数值得分率≥60（含60）判断合格，不因考试进度排除高分。未开始/进行中另列待跟进；已结算成绩及平均值仍排除未完成暂存分值。'),
     ('显示与样式', '中文使用微软雅黑，数字使用Times New Roman，全部单元格水平/垂直居中。比例以百分比保留2位小数，汇总按人数相加后计算，不平均班级比例。字体未安装时由Excel/WPS替代。'),
 ]
 
@@ -101,8 +102,8 @@ def write_row(data, number, record, column_styles, *, header=False, height=None)
 def worksheet(rows):
     if len(rows)+1 > MAX_WORKSHEET_ROWS:
         raise ValueError('班级记录超过Excel行数上限，请缩小范围或导出CSV。')
-    column_styles = [TEXT_STYLE] * 5 + [PERCENT_STYLE, NUMBER_STYLE]
-    sheet = base_sheet([22, 18, 32, 30, 14, 14, 14], column_styles)
+    column_styles = [TEXT_STYLE] * 5 + [PERCENT_STYLE, NUMBER_STYLE] + [TEXT_STYLE] * 3
+    sheet = base_sheet([22, 18, 32, 30, 14, 14, 14, 24, 24, 18], column_styles)
     data = SubElement(sheet, 'sheetData')
     write_row(data, 1, HEADERS, column_styles, header=True, height=30)
     for number, student in enumerate(rows, 2):
@@ -110,9 +111,11 @@ def worksheet(rows):
         if rate is not None and not has_numeric_score(rate):
             raise ValueError('当前成绩存在无效数值，请先核对，不生成损坏或误导的Excel。')
         values = [student['student_id'], student['name'], student['college_name'],
-                  student['class_name'], student['status'], None if rate is None else rate / 100, rate]
+                  student['class_name'], student['status'], None if rate is None else rate / 100, rate,
+                  student.get('exam_started_at'), student.get('exam_finished_at'),
+                  format_duration(student.get('answer_duration_seconds')) or None]
         write_row(data, number, values, column_styles)
-    SubElement(sheet, 'autoFilter', ref=f'A1:G{len(rows)+1}')
+    SubElement(sheet, 'autoFilter', ref=f'A1:J{len(rows)+1}')
     return xml(sheet)
 
 

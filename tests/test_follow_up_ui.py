@@ -25,13 +25,13 @@ def select_class(page,url,sid):
 
 
 @pytest.mark.parametrize('width',[1920,1440,1024,768,390,320])
-def test_follow_up_scope_categories_90_is_qualified_and_downloads(browser,ui_url,width,tmp_path):
+def test_follow_up_scope_categories_60_is_qualified_and_downloads(browser,ui_url,width,tmp_path):
     page=browser.new_page(viewport={'width':width,'height':1000},accept_downloads=True)
     errors=[]
     page.on('pageerror',lambda error:errors.append(str(error)))
     ids=[f'S{width}{suffix}' for suffix in ['M','N','P','L','Z','E','T','O','H','R']]
-    cases=[('已完成',None),('未开始',0),('进行中',95),('已完成',89),('已录入',0),
-           ('已完成',90),('进行中',90),('缺考',20),('已录入',100),('进行中',None)]
+    cases=[('已完成',None),('未开始',0),('进行中',95),('已完成',59),('已录入',0),
+           ('已完成',60),('进行中',60),('缺考',20),('已录入',100),('进行中',None)]
     try:
         seed(page,ui_url,[row(sid,name=f'合成跟进{suffix}',cls=f'跟进{width}班',status=status,rate=rate)
                          for suffix,(sid,(status,rate)) in enumerate(zip(ids,cases,strict=True))])
@@ -42,17 +42,26 @@ def test_follow_up_scope_categories_90_is_qualified_and_downloads(browser,ui_url
         playwright.expect(dialog.locator('#follow-content [data-row-key]')).to_have_count(8)
         playwright.expect(dialog.locator('.dialog-header p')).to_contain_text(f'跟进{width}班')
         playwright.expect(dialog.locator('#follow-kind-missing span')).to_have_text('2')
-        dialog.locator('#follow-kind-at_90').click()
+        dialog.locator('#follow-kind-at_60').click()
+        assert dialog.locator('#follow-kind-at_90').count()==0
         playwright.expect(dialog.locator('#follow-content [data-row-key]')).to_have_count(2)
         assert dialog.locator('#follow-content .badge.success').count()==2
-        playwright.expect(dialog.locator('.issue-summary')).to_contain_text('恰好90已合格')
+        playwright.expect(dialog.locator('.issue-summary')).to_contain_text('恰好60已合格')
+        with page.expect_download() as boundary_download:
+            dialog.locator('[data-action="follow-export"][data-format="xlsx"]').click()
+        assert '恰好60' in boundary_download.value.suggested_filename
+        boundary_sheet=read_workbook(Path(boundary_download.value.path()).read_bytes(),'synthetic.xlsx')[0]
+        assert boundary_sheet.rows==3
+        assert {boundary_sheet.cell(i,0).text() for i in (1,2)}=={ids[5],ids[6]}
+        assert all(boundary_sheet.cell(i,5).value==60 for i in (1,2))
+        assert all('恰好60' in boundary_sheet.cell(i,7).text() for i in (1,2))
         dialog.locator('#follow-kind-in_progress').click()
         playwright.expect(dialog.locator('#follow-content [data-row-key]')).to_have_count(3)
         with page.expect_download() as result:
             dialog.locator('[data-action="follow-export"][data-format="csv"]').click()
         records=list(csv.DictReader(io.StringIO(Path(result.value.path()).read_text(encoding='utf-8-sig'))))
         assert {record['学号'] for record in records}=={ids[2],ids[6],ids[9]}
-        assert next(record for record in records if record['学号']==ids[6])['合格情况']=='已合格（≥90）'
+        assert next(record for record in records if record['学号']==ids[6])['合格情况']=='已合格（≥60）'
         dialog.locator('#follow-kind-missing').click()
         playwright.expect(dialog.locator('#follow-content [data-row-key]')).to_have_count(2)
         with page.expect_download() as result:

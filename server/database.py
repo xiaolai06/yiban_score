@@ -28,7 +28,7 @@ def init_db(path: Path) -> None:
     """Initialize or migrate recognized schemas atomically; preserve V1 backup.
 
     Unsupported metadata is rejected before persistent journal-mode changes.
-    Exclusion guards are additive, so the public schema_version remains 2.
+    Exclusion guards and optional exam-time columns are additive; schema_version stays 2.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(path, timeout=15)
@@ -72,6 +72,17 @@ def init_db(path: Path) -> None:
                     con.execute(statement)
             for statement in schema_statements(SCHEMA):
                 con.execute(statement)
+            columns = {record[1] for record in con.execute('PRAGMA table_info(students)')}
+            additions = {
+                'exam_started_at': 'TEXT DEFAULT NULL',
+                'exam_finished_at': 'TEXT DEFAULT NULL',
+                'answer_duration_seconds': "INTEGER DEFAULT NULL CHECK(answer_duration_seconds IS NULL OR (typeof(answer_duration_seconds)='integer' AND answer_duration_seconds>=0))",
+            }
+            for name, definition in additions.items():
+                if name not in columns:
+                    con.execute(f'ALTER TABLE students ADD COLUMN {name} {definition}')
+            if old and not set(additions).issubset(columns):
+                bump_revision(con)  # Invalidate staged previews from the pre-time application.
             if migrate:
                 con.execute("UPDATE metadata SET value='2' WHERE key='schema_version'")
                 bump_revision(con)

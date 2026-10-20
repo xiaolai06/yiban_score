@@ -1,6 +1,6 @@
 // Compatibility for a still-running old service: count complete, read-only
 // recorded-score pages, not just the visible page. Never substitute 0 for missing fields.
-import {hasNumericScore,hasValidScore,isQualifiedScore} from './grade_values.js';
+import {PASS_SCORE,hasNumericScore,hasValidScore,isQualifiedScore} from './grade_values.js';
 export async function completeDirectoryStatistics(api,query,isCurrent=()=>true) {
   for(let attempt=0;attempt<2;attempt++){
     if(!isCurrent())return null;
@@ -9,7 +9,7 @@ export async function completeDirectoryStatistics(api,query,isCurrent=()=>true) 
     const snapshot=await api(`/api/students?${query}`);
     const expected=snapshot.recorded;
     if(!Number.isInteger(expected)||expected<0)throw new Error('旧服务未提供有效录入人数，无法核对统计。');
-    const counts={qualified:0,at_90:0};
+    const counts={qualified:0,at_60:0};
     const seen=new Set();let settled=0,scoreSum=0,changed=false,invalid=false;
     const scan=new URLSearchParams(query);
     scan.set('score_filter','recorded');scan.set('sort','student_id');scan.set('order','asc');scan.set('page_size','100');
@@ -24,7 +24,7 @@ export async function completeDirectoryStatistics(api,query,isCurrent=()=>true) 
         seen.add(student.student_id);
         if(!hasNumericScore(rate)){invalid=true;continue;}
         if(isQualifiedScore(student))counts.qualified++;
-        if(rate===90)counts.at_90++; // Informative subset of qualified.
+        if(rate===PASS_SCORE)counts.at_60++; // Informative subset of qualified.
         if(hasValidScore(student)){settled++;scoreSum+=rate;}
       }
       if(changed)break;
@@ -33,7 +33,7 @@ export async function completeDirectoryStatistics(api,query,isCurrent=()=>true) 
     const after=await api('/api/health');
     const reported=snapshot.valid_scores??snapshot.settled;
     if(!changed&&before.revision===after.revision&&seen.size===expected&&(invalid||!Number.isInteger(reported)||settled===reported)){
-      return {...snapshot,...counts,settled,valid_scores:settled,average_rate:settled?Math.round(scoreSum/settled*100)/100:null,below_90:snapshot.total-counts.qualified};
+      return {...snapshot,...counts,settled,valid_scores:settled,average_rate:settled?Math.round(scoreSum/settled*100)/100:null,pass_score:PASS_SCORE,completed:settled,below_60:snapshot.total-counts.qualified};
     }
   }
   throw new Error('补算期间成绩发生变化，无法确认统计，请刷新后重新读取。');

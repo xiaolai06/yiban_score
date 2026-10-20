@@ -35,9 +35,11 @@ from .database import (
     read_snapshot,
     revision,
 )
+from .exam_time import TIME_FIELDS, format_duration
 from .excel_reader import WorkbookError, read_workbook
 from .grade_rules import (
     NUMERIC_SCORE_SQL,
+    PASS_SCORE,
     QUALIFIED_SQL,
     UNQUALIFIED_SQL,
     VALID_SCORE_SQL,
@@ -56,7 +58,8 @@ from .staging import (
 ROOT = Path(__file__).resolve().parent.parent
 MAX_UPLOAD = 20 * 1024 * 1024
 PREVIEW_TTL = 3600
-# Qualification is numerical >=90 everywhere; progress is tracked separately.
+# Qualification is numerical >=60 everywhere; progress is tracked separately.
+# below_90 remains a legacy API key for the unqualified group (<60 or missing).
 
 class PreviewInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -91,7 +94,7 @@ class StudentFilterInput(BaseModel):
     college_id: StrictInt | None = Field(default=None, ge=1)
     class_id: StrictInt | None = Field(default=None, ge=1)
     status: str = ''
-    score_filter: Literal['all', 'recorded', 'missing', 'below_90'] = 'all'
+    score_filter: Literal['all', 'recorded', 'missing', 'below_60', 'below_90'] = 'all'
 
 
 class ScoreExportInput(BaseModel):
@@ -99,7 +102,8 @@ class ScoreExportInput(BaseModel):
     all_students: StrictBool = False
     college_ids: list[StrictInt] = Field(default_factory=list, max_length=500)
     class_ids: list[StrictInt] = Field(default_factory=list, max_length=2000)
-    below_90: StrictBool = False
+    below_60: StrictBool = False
+    below_90: StrictBool = False  # Deprecated alias for below_60.
     expected_revision: StrictInt | None = Field(default=None, ge=0)
     student_ids: list[str] = Field(default_factory=list, max_length=25000)
     excluded_student_ids: list[str] = Field(default_factory=list, max_length=25000)
@@ -237,6 +241,8 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         row['statuses'] = [{'status': x, 'count': counts.get(x, 0)} for x in STATUSES]
         row['revision'] = revision(con)
         row['valid_scores'] = row['settled']
+        row['completed'] = row['settled']
+        row['pass_score'] = PASS_SCORE
         last_import = con.execute('SELECT * FROM import_batches ORDER BY id DESC LIMIT 1').fetchone()
         row['last_import'] = dict(last_import) if last_import else None
         return row
@@ -245,8 +251,8 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
     def health():
         with connection(db_path) as con:
             return {'ok': True, 'storage': 'SQLite', 'database_file': db_path.name,
-                    'local_only': public_host is None, 'schema_version': 2, 'directory_api_version': 4, 'revision': revision(con),
-                    'statuses': STATUSES, 'max_upload_mb': 20, 'preview_ttl_minutes': 60, 'roster_removal_api_version': 1, 'score_export_workbook_version': 3, 'follow_up_api_version': 1, 'read_snapshot_api_version': 1}
+                    'local_only': public_host is None, 'schema_version': 2, 'directory_api_version': 6, 'revision': revision(con),
+                    'statuses': STATUSES, 'max_upload_mb': 20, 'preview_ttl_minutes': 60, 'roster_removal_api_version': 1, 'score_export_workbook_version': 6, 'follow_up_api_version': 4, 'exam_time_api_version': 1, 'pass_score': PASS_SCORE, 'read_snapshot_api_version': 1}
 
     @app.get('/api/stats')
     def stats():
@@ -255,6 +261,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             result['colleges_detail'] = [dict(r) for r in con.execute(f'''
                 SELECT co.id, co.name, COUNT(s.student_id) AS students,
                        COUNT(DISTINCT c.id) AS classes, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled,
+                       COUNT(CASE WHEN {VALID_SCORE_SQL} THEN 1 END) AS completed,
                        COUNT(CASE WHEN {QUALIFIED_SQL} THEN 1 END) AS qualified,
                        ROUND(AVG(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END),2) AS average_rate
                 FROM colleges co JOIN classes c ON c.college_id=co.id
@@ -348,9 +355,10 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                                               'before': old['name'], 'after': row['name']})
                 counts[action] += 1
                 if len(sample) < 25:
-                    shown = dict(row, action=action, changes=changes)
+                    shown: dict = dict(row, action=action, changes=changes)
                     if old:
                         shown['status'], shown['score_rate'] = old['status'], old['score_rate']
+                        shown.update({key:old.get(key) for key in TIME_FIELDS})
                     sample.append(shown)
             con.rollback()
         summary = dict(counts, source_rows=validated['source_rows'], valid_rows=len(validated['rows']),
@@ -475,27 +483,29 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             parts.append('s.score_rate IS NOT NULL')
         elif score_filter == 'missing':
             parts.append('s.score_rate IS NULL')
-        elif score_filter == 'below_90':
+        elif score_filter in {'below_60', 'below_90'}:
             parts.append(UNQUALIFIED_SQL)
         return (' WHERE ' + ' AND '.join(parts)) if parts else '', params
 
     @app.get('/api/students/export.csv')
     def export_students(q: str = Query('', max_length=120), college_id: int | None = Query(None, ge=1),
                         class_id: int | None = Query(None, ge=1), status: str = '',
-                        score_filter: Literal['all', 'recorded', 'missing', 'below_90'] = 'all'):
+                        score_filter: Literal['all', 'recorded', 'missing', 'below_60', 'below_90'] = 'all'):
         where, params = build_filter(q, college_id, class_id, status, score_filter)
         out = io.StringIO(newline='')
         writer = csv.writer(out)
-        writer.writerow(['学号', '姓名', '性别', '院系', '专业', '班级', '状态', '得分率(%)'])
+        writer.writerow(['学号', '姓名', '性别', '院系', '专业', '班级', '状态', '得分率(%)', '开始时间', '结束时间', '答题时长'])
         with connection(db_path) as con:
             for row in con.execute(STUDENT_SELECT + where + ' ORDER BY s.student_id', params):
                 values = [row['student_id'], row['name'], row['gender'], row['college_name'], row['major'], row['class_name'], row['status'],
-                          '' if row['score_rate'] is None else row['score_rate']]
+                          '' if row['score_rate'] is None else row['score_rate'],
+                          row['exam_started_at'], row['exam_finished_at'], format_duration(row['answer_duration_seconds'])]
                 writer.writerow([safe_csv(v) for v in values])
         return csv_response(out.getvalue(), 'students-export.csv')
 
     @app.post('/api/students/export.xlsx')
     def export_score_workbook(selection: ScoreExportInput):
+        unqualified_only = selection.below_60 or selection.below_90
         has_scope = selection.all_students or bool(selection.college_ids or selection.class_ids)
         has_students = bool(selection.student_ids) or selection.student_filter is not None
         if not has_scope and not has_students:
@@ -540,27 +550,27 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                     parts.append('s.student_id NOT IN (SELECT student_id FROM export_excluded)')
             elif not selection.all_students:
                 parts.append("(c.college_id IN (SELECT id FROM export_scope WHERE kind='college') OR s.class_id IN (SELECT id FROM export_scope WHERE kind='class'))")
-            if selection.below_90:
+            if unqualified_only:
                 parts.append(UNQUALIFIED_SQL)
             where = ' WHERE ' + ' AND '.join(parts) if parts else ''
             rows = [dict(row) for row in con.execute(STUDENT_SELECT + where + ' ORDER BY co.id,c.id,s.student_id', params)]
             con.rollback()
         if not rows:
-            raise HTTPException(400, '所选范围没有不合格人员（低于90分或无有效成绩）。' if selection.below_90 else '所选范围没有学生。')
+            raise HTTPException(400, '所选范围没有不合格人员（低于60分或无有效成绩）。' if unqualified_only else '所选范围没有学生。')
         try:
             content = build_score_workbook(rows)
         except ValueError as exc:
             raise HTTPException(413, str(exc)) from exc
-        filename = 'scores-unqualified.xlsx' if selection.below_90 else 'scores-selected.xlsx'
+        filename = 'scores-unqualified.xlsx' if unqualified_only else 'scores-selected.xlsx'
         return Response(content, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                         headers={'Content-Disposition': f'attachment; filename="{filename}"',
-                                 'X-Export-Students': str(len(rows)), 'X-Export-Workbook-Version': '3',
+                                 'X-Export-Students': str(len(rows)), 'X-Export-Workbook-Version': '6',
                                  'X-Data-Revision': str(rev)})
 
     @app.get('/api/students')
     def students(q: str = Query('', max_length=120), college_id: int | None = Query(None, ge=1),
                  class_id: int | None = Query(None, ge=1), status: str = '',
-                 score_filter: Literal['all', 'recorded', 'missing', 'below_90'] = 'all',
+                 score_filter: Literal['all', 'recorded', 'missing', 'below_60', 'below_90'] = 'all',
                  page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
                  sort: Literal['student_id', 'name', 'score_rate', 'updated_at', 'college_name', 'class_name'] = 'student_id',
                  order: Literal['asc', 'desc'] = 'asc'):
@@ -570,13 +580,17 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             rev = revision(con)
             aggregate = dict(con.execute(f'''SELECT COUNT(*) AS total, COUNT(s.score_rate) AS recorded, COUNT(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END) AS settled,
                 COUNT(CASE WHEN {QUALIFIED_SQL} THEN 1 END) AS qualified,
+                COUNT(CASE WHEN {NUMERIC_SCORE_SQL} AND s.score_rate = {PASS_SCORE} THEN 1 END) AS at_60,
                 COUNT(CASE WHEN {NUMERIC_SCORE_SQL} AND s.score_rate = 90 THEN 1 END) AS at_90,
                 ROUND(AVG(CASE WHEN {VALID_SCORE_SQL} THEN s.score_rate END),2) AS average_rate FROM students s
                 JOIN classes c ON c.id=s.class_id''' + where, params).fetchone())
             total = aggregate['total']
             aggregate['valid_scores'] = aggregate['settled']
-            # at_90 is now an informative SUBSET of qualified, not a third group.
-            aggregate['below_90'] = total - aggregate['qualified']
+            # Boundary counts are qualified subsets, never a third group.
+            aggregate['pass_score'] = PASS_SCORE
+            aggregate['completed'] = aggregate['settled']
+            aggregate['below_60'] = total - aggregate['qualified']
+            aggregate['below_90'] = aggregate['below_60']  # Deprecated alias.
             pages = max(1, math.ceil(total / page_size))
             actual_page = min(page, pages)
             sort_columns = {'student_id': 's.student_id', 'name': 's.name', 'score_rate': 's.score_rate',

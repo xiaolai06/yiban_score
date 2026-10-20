@@ -3,6 +3,12 @@ export const h = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':
 export const num = (v) => Number(v || 0).toLocaleString('zh-CN');
 export const percent = (v) => v === null || v === undefined ? '—' : `${Number(v).toLocaleString('zh-CN', {maximumFractionDigits: 2})}%`;
 export const date = (v) => v ? new Date(v).toLocaleString('zh-CN', {hour12: false}) : '暂无记录';
+export function duration(seconds) {
+  if(typeof seconds!=='number'||!Number.isFinite(seconds)||seconds<0)return '—';
+  const total=Math.floor(seconds),hours=Math.floor(total/3600),minutes=Math.floor(total%3600/60),second=total%60;
+  return [hours,minutes,second].map(value=>String(value).padStart(2,'0')).join(':');
+}
+export const examTimeTitle = (row) => `开始：${row.exam_started_at||'未提供'}；结束：${row.exam_finished_at||'未提供'}；答题时长＝结束时间－开始时间（时:分:秒）`;
 const paths = {
   cap: '<path d="m2 9 10-5 10 5-10 5L2 9Z"/><path d="M6 11v7c4 3 8 3 12 0v-7M22 9v7"/>',
   upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
@@ -36,14 +42,14 @@ const paths = {
 };
 export const icon = (name, cls = '') => `<svg class="icon ${h(cls)}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.file}</svg>`;
 export const badge = (status) => `<span class="badge ${({'待录入':'pending','已录入':'success','已完成':'success','未开始':'neutral','进行中':'progress','缺考':'absent','免考':'exempt'})[status] || ''}"><span class="badge-dot"></span>${h(status)}</span>`;
-export function metrics(stats, qualifiedMessage='统计中…') {
+export function metrics(stats, completedMessage='统计中…') {
   const cards = [
     ['users','学生总数',num(stats.students),'以学号唯一识别','teal'],
     ['school','学院数量',num(stats.colleges),'从名单自动归集','blue'],
     ['layers','班级数量',num(stats.classes),'按所属学院分层','purple'],
-    ['check','合格人数',stats.qualified==null?qualifiedMessage:num(stats.qualified),'得分率 ≥90%','teal'],
+    ['check','已完成人数',stats.completed==null?completedMessage:num(stats.completed),'有正式成绩，含 0 分','teal'],
   ];
-  return `<div class="metrics">${cards.map(([i,t,v,n,c])=>`<div class="metric"><div class="metric-label">${h(t)}<span class="metric-icon ${c}">${icon(i)}</span></div><div class="metric-value ${t==='合格人数'&&stats.qualified==null?'is-pending':''}">${h(v)}</div><div class="metric-note">${h(n)}</div></div>`).join('')}</div>`;
+  return `<div class="metrics">${cards.map(([i,t,v,n,c])=>`<div class="metric"><div class="metric-label">${h(t)}<span class="metric-icon ${c}">${icon(i)}</span></div><div class="metric-value ${t==='已完成人数'&&stats.completed==null?'is-pending':''}">${h(v)}</div><div class="metric-note">${h(n)}</div></div>`).join('')}</div>`;
 }
 export function pageHeading(_eyebrow, title, subtitle, actions='') {
   return `<div class="page-heading"><div class="heading-copy"><h1>${h(title)}</h1><p class="subtitle">${h(subtitle)}</p></div><div class="heading-actions">${actions}</div></div>`;

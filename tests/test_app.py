@@ -90,13 +90,14 @@ def test_static_and_empty_database(client):
     assert client.get('/api/students').json()['pages']==1
 
 
-def test_overview_qualified_counts_include_90_and_exclude_missing(client):
+def test_overview_qualified_and_completed_counts_are_distinct(client):
     empty = client.get('/api/stats').json()
-    assert empty['qualified'] == 0
+    assert empty['qualified'] == empty['completed'] == 0
+    assert empty['pass_score'] == 60
     assert empty['colleges_detail'] == []
     add(client, [
-        row('000001', rate=89.99, status='已完成'),
-        row('000002', rate=90, status='已完成'),
+        row('000001', rate=59.99, status='已完成'),
+        row('000002', rate=60, status='已完成'),
         row('000003', rate=90.01, status='已录入'),
         row('000004', rate=100, status='已完成'),
         row('000005', rate=0, status='已完成'),
@@ -109,6 +110,8 @@ def test_overview_qualified_counts_include_90_and_exclude_missing(client):
     assert stats['students'] == 9
     assert stats['qualified'] == 5
     assert stats['recorded'] == 7
+    assert stats['completed'] == 5  # Includes completed 0 and 59.99, not unfinished scores.
+    assert sum(co['completed'] for co in stats['colleges_detail']) == 5
     colleges = {co['name']: co for co in stats['colleges_detail']}
     assert colleges['示例学院A']['qualified'] == 3
     assert colleges['示例学院B']['qualified'] == 2
@@ -147,7 +150,7 @@ def test_valid_score_counts_exclude_missing_and_unfinished_values(client):
     ])
     stats = client.get('/api/stats').json()
     assert stats['recorded'] == 5
-    assert stats['valid_scores'] == stats['settled'] == 3
+    assert stats['completed'] == stats['valid_scores'] == stats['settled'] == 3
     assert stats['average_rate'] == 56.83
     for page in (1, 2):
         result = client.get('/api/students', params={'page_size': 1, 'page': page}).json()

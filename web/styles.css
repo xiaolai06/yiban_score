@@ -153,8 +153,18 @@ input.sr-only{width:1px!important;max-width:1px!important;min-width:0!important;
 .scores-workspace .students-table th:nth-child(7) .sort-button,.scores-workspace .students-table th:nth-child(8) .sort-button{width:100%;justify-content:flex-end}
 .scores-workspace .rate-track{margin-left:auto}
 .scores-workspace .cell-secondary{font-size:13px;color:#405875;font-weight:500;white-space:normal;max-width:240px;margin-top:3px;line-height:1.5;overflow-wrap:anywhere}
+.duration-cell{font-variant-numeric:tabular-nums;white-space:nowrap;color:#304c73}
+.duration-value{font-size:15px;font-weight:650;letter-spacing:.2px}
+.exam-time-detail{display:grid;gap:7px;padding:12px 14px;border:1px solid #d8e2ef;border-radius:8px;background:#f7f9fd;font-size:14px;color:#304969;font-variant-numeric:tabular-nums}
 .scores-workspace .score-cell{min-width:90px}
 .scores-workspace .score-cell .cell-secondary{display:block}
+@media(min-width:861px) and (max-width:1550px){
+  .scores-workspace .students-table th,.scores-workspace .students-table td{padding-left:8px;padding-right:8px}
+  .scores-workspace .student-cell{min-width:90px}
+  .scores-workspace .students-table .duration-cell{min-width:90px}
+  .scores-workspace .cell-class>div:first-child{min-width:110px}
+  .scores-workspace .score-cell{min-width:80px}
+}
 .scores-workspace .row-index{font-size:13px;color:#586d88;font-variant-numeric:tabular-nums}
 .scores-workspace .badge{font-size:13px;padding:5px 8px}
 .scores-workspace .not-recorded{color:#50647e;font-size:13px;background:#f4f7fb}

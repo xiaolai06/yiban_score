@@ -78,7 +78,7 @@ def test_simplified_shell_and_navigation(browser, ui_url, tmp_path, width):
                 assert page.locator('#main .warm-card, #main .distribution-note').count() == 0
                 assert '平均' not in page.locator('#main').inner_text()
                 assert page.locator('.metrics .metric').count() == 4
-                playwright.expect(page.locator('.metrics .metric-label').last).to_have_text('合格人数')
+                playwright.expect(page.locator('.metrics .metric-label').last).to_have_text('已完成人数')
             else:
                 playwright.expect(page.locator('#main h1')).to_have_text(title)
             page.wait_for_load_state('networkidle')
@@ -109,7 +109,7 @@ def test_simplified_shell_and_navigation(browser, ui_url, tmp_path, width):
                 assert page.locator('#main > .info-box, .directory-summary, #main .page-heading').count() == 0
                 assert page.locator('#main a[download], #main a[href="#score-import"]').count() == 0
                 assert page.locator('.students-table th').all_text_contents() == [
-                    '', '序号', '学号', '姓名', '班级', '状态', '得分率', '得分', '操作']
+                    '', '序号', '学号', '姓名', '班级', '状态', '得分率', '得分', '答题时长', '操作']
                 if width > 860:
                     left = page.locator('.organization').bounding_box()
                     right = page.locator('.students-panel').bounding_box()

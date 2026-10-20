@@ -14,6 +14,7 @@ from typing import Literal
 from fastapi import HTTPException, Query, Response
 
 from .database import connection
+from .exam_time import TIME_FIELDS, format_duration
 from .table_export import build_table_workbook
 
 ISSUE_LABELS = {'unmatched': '名单外学号', 'invalid': '数据错误',
@@ -46,7 +47,8 @@ def group_issues(events: list[dict]) -> list[dict]:
                 'key': key, 'student_id': event['student_id'], 'raw_ids': [], 'names': [],
                 'colleges': [], 'classes': [], 'kinds': [], 'reasons': [],
                 'best_score_rate': None, 'best_status': '', 'best_batch_id': None,
-                'best_batch_name': '', 'best_row_number': None, 'occurrence_count': 0,
+                'best_batch_name': '', 'best_row_number': None, 'best_exam_started_at': None,
+                'best_exam_finished_at': None, 'best_answer_duration_seconds': None, 'occurrence_count': 0,
                 'batch_count': 0, 'first_seen': event['created_at'], 'last_seen': event['created_at'],
                 'latest_batch_id': event['batch_id'], 'latest_batch_name': event['batch_name'],
                 '_batches': set(), '_events': [], '_last_id': event['id'],
@@ -62,7 +64,8 @@ def group_issues(events: list[dict]) -> list[dict]:
         rate = event['score_rate']
         if rate is not None and (group['best_score_rate'] is None or rate > group['best_score_rate']):
             group.update(best_score_rate=rate, best_status=event['status'], best_batch_id=event['batch_id'],
-                         best_batch_name=event['batch_name'], best_row_number=event['row_number'])
+                         best_batch_name=event['batch_name'], best_row_number=event['row_number'],
+                         **{'best_'+field: event.get(field) for field in TIME_FIELDS})
         group['occurrence_count'] += 1
         group['_batches'].add(event['batch_id'])
         group['batch_count'] = len(group['_batches'])
@@ -92,21 +95,26 @@ def export_table(groups, scope):
     if scope == 'summary':
         headers = ['学号', '姓名记录', '学院记录', '班级记录', '最高记录得分率(%)', '最高分批次号',
                    '最高分批次名称', '最高分原表行号', '出现次数', '涉及批次数', '异常类型', '异常原因', '首次出现', '最近出现',
-                   '原学号记录', '最近批次号', '最近批次名称', '汇总标识']
+                   '原学号记录', '最近批次号', '最近批次名称', '汇总标识',
+                   '最高分记录开始时间', '最高分记录结束时间', '最高分记录答题时长']
         rows = [[g['student_id'] or '学号无效 / 未填写', ' / '.join(g['names']), ' / '.join(g['colleges']),
                  ' / '.join(g['classes']), g['best_score_rate'], g['best_batch_id'], g['best_batch_name'],
                  g['best_row_number'], g['occurrence_count'], g['batch_count'],
                  ' / '.join(ISSUE_LABELS[kind] for kind in g['kinds']), '；'.join(g['reasons']),
                  g['first_seen'], g['last_seen'], ' / '.join(g['raw_ids']), g['latest_batch_id'],
-                 g['latest_batch_name'], g['key']] for g in groups]
+                 g['latest_batch_name'], g['key'], g['best_exam_started_at'], g['best_exam_finished_at'],
+                 format_duration(g['best_answer_duration_seconds']) or None] for g in groups]
         return headers, rows
     headers = ['学号', '原学号', '原姓名', '名单姓名', '原学院', '原班级', '批次号', '批次名称', '导入时间',
-               '批次状态', '原表行号', '原状态', '原得分率', '原成绩/百分比', '可识别得分率(%)', '异常类型', '异常原因']
+               '批次状态', '原表行号', '原状态', '原得分率', '原成绩/百分比', '可识别得分率(%)', '异常类型', '异常原因',
+               '原开始时间', '原结束时间', '开始时间', '结束时间', '答题时长']
     events = sorted((event for group in groups for event in group['_events']), key=lambda event: event['id'], reverse=True)
     return headers, [[e['student_id'], e['raw_id'], e['source_name'], e['name'], e['source_college'], e['source_class_name'],
                       e['batch_id'], e['batch_name'], e['created_at'], '已撤销' if e['batch_state'] == 'reverted' else '已保存',
                       e['row_number'], e['raw_status'], e['raw_rate'], e['raw_result'], e['score_rate'],
-                      ISSUE_LABELS[e['action']], '；'.join(e['errors'])] for e in events]
+                      ISSUE_LABELS[e['action']], '；'.join(e['errors']), e['raw_started_at'], e['raw_finished_at'],
+                      e.get('exam_started_at'), e.get('exam_finished_at'),
+                      format_duration(e.get('answer_duration_seconds')) or None] for e in events]
 
 
 def issue_snapshot(con, saved_record, *, college_id=None, class_id=None, exclude_removed=False):
@@ -135,6 +143,9 @@ def issue_snapshot(con, saved_record, *, college_id=None, class_id=None, exclude
         errors = record.get('errors') or []
         if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
             raise HTTPException(503, '已保存的异常明细格式异常，请检查数据库备份。')
+        event['raw_started_at'] = str(record.get('raw_started_at') or '')
+        event['raw_finished_at'] = str(record.get('raw_finished_at') or '')
+        event.update({field: record.get(field) for field in TIME_FIELDS})
         event['errors'] = errors
         event['score_rate'] = recorded_rate(record.get('score_rate'))
         events.append(event)

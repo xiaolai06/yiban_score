@@ -1,6 +1,6 @@
-import {h,num,percent,date,icon,pageHeading,blank,badge} from './components.js';
+import {h,num,percent,date,duration,examTimeTitle,icon,pageHeading,blank,badge} from './components.js';
 
-export const scoreFields={student_id:'学号',name:'姓名（核对名单）',status:'状态',score_rate:'得分率',result_text:'成绩 / 百分比（备用）',college:'学院（核对名单）',class_name:'班级（核对名单）'};
+export const scoreFields={student_id:'学号',name:'姓名（核对名单）',status:'状态',score_rate:'得分率',result_text:'成绩 / 百分比（备用）',college:'学院（核对名单）',class_name:'班级（核对名单）',exam_started_at:'开始时间（选填，L列）',exam_finished_at:'结束时间（选填，M列）'};
 const actions={update:'将更新',unchanged:'保持不变',protected:'保留原成绩',unmatched:'未匹配',invalid:'数据错误',name_conflict:'姓名冲突',duplicate:'重复已合并',duplicate_conflict:'重复冲突'};
 const tones={update:'success',unchanged:'neutral',protected:'pending',unmatched:'absent',invalid:'absent',name_conflict:'absent',duplicate:'neutral',duplicate_conflict:'absent'};
 const pill=(action)=>`<span class="badge ${tones[action]||'neutral'}">${h(actions[action]||action)}</span>`;
@@ -13,19 +13,21 @@ function uploadBox(G) {
   return `<div class="dropzone ${G.busy?'busy':''}" id="score-dropzone">
     <div class="upload-symbol">${icon('upload')}</div>
     <h3>${G.busy?'正在读取成绩文件…':'将学生成绩拖到这里，或点击上传'}</h3>
-    <p>成绩需包含学号、状态和得分率</p>
+    <p>成绩需包含学号、状态和得分率；开始 / 结束时间选填，旧报表可直接导入</p>
     <button class="btn primary ${G.busy?'spin':''}" data-action="score-choose" ${G.busy?'disabled':''}>${icon(G.busy?'refresh':'upload')}${G.busy?'正在识别表头':'选择成绩文件'}</button>
     <div class="dropzone-foot"><span class="format-pill">CSV / TSV</span><span class="format-pill">XLS / XLSX</span><span>单个文件最大 20 MB</span></div>
   </div>`;
 }
 function mapping(G) {
   const sh=G.upload.sheets[G.sheetIndex], disabled=G.busy?'disabled':'';
+  const timeSupported=G.upload.timeSupported!==false;
+  const timeNote=timeSupported?'开始 / 结束时间均为选填。旧报表无需补列，没有完整时间时正常导入成绩，答题时长显示“—”。':'兼容旧版服务：成绩可以正常导入，本次不处理时间，答题时长显示“—”；如需保存文件里的时间，请升级服务后重新导入。';
   return `<div class="uploaded-file">${icon('file')}<div class="file-content"><div class="file-name">${h(G.upload.filename)}</div><div class="file-meta">${h(G.upload.format.encoding)} · ${h(G.upload.format.delimiter)} · 表头后 ${num(sh.rows)} 行</div></div><button class="icon-btn" data-action="score-reset" title="更换文件" ${disabled}>${icon('close')}</button></div>
     <div class="form-field batch-name-field"><label for="score-name">本次导入名称 <span>*</span></label><input id="score-name" maxlength="120" value="${h(G.name)}" placeholder="输入便于查找的导入名称" ${disabled}></div>
     <div class="form-row"><div class="form-field"><label for="score-sheet">选择工作表</label><select id="score-sheet" ${disabled}>${G.upload.sheets.map((s,i)=>`<option value="${i}" ${i===G.sheetIndex?'selected':''}>${h(s.name)} · ${num(s.rows)} 行</option>`).join('')}</select></div><div class="form-field header-field"><label for="score-header">表头所在行</label><input type="number" id="score-header" value="${h(G.headerDraft??G.headerRow)}" min="1" max="60000" ${disabled}></div><button class="btn secondary" data-action="score-header" ${disabled}>重新识别</button></div>
     <div class="section-caption">确认字段对应关系<span class="small-muted">按学号匹配，姓名与学院班级仅用于核对</span></div>
-    <div class="mapping score-mapping">${Object.entries(scoreFields).map(([key,label])=>`<div class="form-field"><label for="score-map-${key}">${h(label)} ${['student_id','status'].includes(key)?'<span>*</span>':''}</label><select id="score-map-${key}" data-score-map="${key}" ${disabled}><option value="">不使用此列</option>${sh.headers.map(c=>`<option value="${c.index}" ${G.mapping[key]===c.index?'selected':''}>${h(c.label)} · 第 ${c.index+1} 列</option>`).join('')}</select></div>`).join('')}</div>
-    <div class="info-box score-merge-rule">${icon('check')}<span>增量导入：未录入的成绩补入，已有成绩保留较高得分率；相同分数不重复覆盖。</span></div>
+    <div class="mapping score-mapping">${Object.entries(scoreFields).map(([key,label])=>`<div class="form-field"><label for="score-map-${key}">${h(label)} ${['student_id','status'].includes(key)?'<span>*</span>':''}</label><select id="score-map-${key}" data-score-map="${key}" ${G.busy||(!timeSupported&&['exam_started_at','exam_finished_at'].includes(key))?'disabled':''}><option value="">不使用此列</option>${sh.headers.map(c=>`<option value="${c.index}" ${G.mapping[key]===c.index?'selected':''}>${h(c.label)} · 第 ${c.index+1} 列</option>`).join('')}</select></div>`).join('')}</div>
+    <div class="info-box score-merge-rule">${icon('check')}<span>增量导入：未录入的成绩补入，已有成绩保留较高得分率；相同分数保留原记录，可补齐缺失答题时间。答题时长＝结束时间－开始时间（M－L），不使用系统评定时间。<br><span id="score-time-note">${h(timeNote)}</span></span></div>
     <details class="cleaning-settings"><summary>${icon('shield')}数值识别设置</summary><div class="settings-grid">
       <div class="form-field"><label for="score-scale">无百分号的数字</label><select id="score-scale" ${disabled}><option value="percent" ${G.scale==='percent'?'selected':''}>按 0–100：92 表示 92%（默认）</option><option value="fraction" ${G.scale==='fraction'?'selected':''}>按 0–1：0.92 表示 92%</option></select></div>
       <div class="form-field"><label for="score-zero">未开始 / 进行中的 0 分</label><select id="score-zero" ${disabled}><option value="null_unfinished" ${G.zeroPolicy==='null_unfinished'?'selected':''}>视为占位，正式得分率留空（推荐）</option><option value="keep" ${G.zeroPolicy==='keep'?'selected':''}>保留原表 0 分，统计仍排除未完成</option></select></div>
@@ -40,12 +42,12 @@ function comparison(row) {
   return `<span class="source-text">${percent(before)}</span><strong class="rate-value">→ ${percent(after)}</strong>`;
 }
 function previewTable(rows) {
-  return `<div class="table-scroll"><table class="cleaning-table"><thead><tr><th>行</th><th>原学号 → 清洗后</th><th>学生</th><th>本次状态</th><th>本次得分率</th><th>原有 → 合并后</th><th>处理结果</th><th>核对说明</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr>
+  return `<div class="table-scroll"><table class="cleaning-table"><thead><tr><th>行</th><th>原学号 → 清洗后</th><th>学生</th><th>本次状态</th><th>本次得分率</th><th>原有 → 合并后</th><th>本次答题时长</th><th>处理结果</th><th>核对说明</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr>
     <td class="row-index">${r.row_number}</td><td><div class="source-text mono">${h(r.raw_id)}</div><div class="mono strong">${h(r.student_id||'无法提取')}</div></td>
     <td><strong>${h(r.name||'—')}</strong><div class="cell-secondary">${h(r.class_name||'未在名单中匹配')}</div>${r.source_name&&r.source_name!==r.name?`<div class="cell-secondary">原姓名：${h(r.source_name)}</div>`:''}</td>
     <td>${r.status?badge(r.status):h(r.raw_status)}</td><td><span class="source-text">${h(r.raw_rate||r.raw_result||'空值')}</span><div class="rate-value">${percent(r.score_rate)}</div></td>
-    <td>${comparison(r)}</td><td>${pill(r.action)}</td><td class="cleaning-notes">${r.errors.length?`<div class="text-danger">${h(r.errors.join(' '))}</div>`:''}${r.notes.length?h(r.notes.join('；')):'无需额外清洗'}</td>
-  </tr>`).join(''):`<tr><td colspan="8">${blank('此分类暂无记录','当前筛选结果为空。')}</td></tr>`}</tbody></table></div>`;
+    <td>${comparison(r)}</td><td class="duration-cell" title="${h(examTimeTitle(r))}"><strong>${duration(r.answer_duration_seconds)}</strong><div class="cell-secondary">合并后：${duration(['invalid','unmatched','name_conflict','duplicate_conflict'].includes(r.action)?null:r.after?.answer_duration_seconds)}</div></td><td>${pill(r.action)}</td><td class="cleaning-notes">${r.errors.length?`<div class="text-danger">${h(r.errors.join(' '))}</div>`:''}${r.notes.length?h(r.notes.join('；')):'无需额外清洗'}</td>
+  </tr>`).join(''):`<tr><td colspan="9">${blank('此分类暂无记录','当前筛选结果为空。')}</td></tr>`}</tbody></table></div>`;
 }
 function rowPager(total,page,actionPrefix) {
   const pages=Math.max(1,Math.ceil(total/20));

@@ -1,12 +1,13 @@
 import {closeControl} from './custom_controls.js';
 
-export const DIRECTORY_UPDATE_MESSAGE='当前启动窗口仍在运行旧后端。新版统一按得分率≥90（含90）合格，不合格仅为<90或无有效数值；未开始/进行中另列待跟进；请在启动窗口按 Ctrl+C，再重新启动网站，然后刷新本页。';
+export const DIRECTORY_UPDATE_MESSAGE='当前启动窗口仍在运行旧后端。新版统一按得分率≥60（含60）合格，不合格仅为<60或无有效数值；未开始/进行中另列待跟进；请在启动窗口按 Ctrl+C，再重新启动网站，然后刷新本页。';
 export const selectionFilters=S=>Object.fromEntries(['q','college_id','class_id','status','score_filter'].map(key=>[key,S.filters[key]]));
 export const selectedStudentCount=S=>S.exportAllStudents?Math.max(0,S.selectedStudentTotal-S.exportExcludedStudents.size):S.exportStudents.size;
 export const studentIsChecked=(S,id)=>S.exportAllStudents?!S.exportExcludedStudents.has(id):S.exportStudents.has(id);
 
 export function installDirectoryController(S,{render,loadStudents,toast}) {
-  let frame=0,observer=null,resizeTimer;
+  let frame=0,observer=null,resizeTimer,heightKey='';
+  const measuredHeights=new Map();
   const allIds=()=>S.hierarchy.flatMap(co=>co.classes.map(cl=>cl.id));
   function clearScope() {S.exportAll=false;S.exportClasses.clear();}
   function toggleScope(kind,id) {
@@ -64,7 +65,22 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
       const header=table.querySelector('thead').getBoundingClientRect().height;
       const rowHeight=parseFloat(getComputedStyle(area).getPropertyValue('--score-row-height'))||53;
       const horizontal=area.scrollWidth>area.clientWidth?16:0;
-      const capacity=Math.max(1,Math.min(100,Math.floor((area.getBoundingClientRect().height-header-horizontal-2)/rowHeight)));
+      const key=JSON.stringify([selectionFilters(S),S.filters.sort,S.filters.order,S.students.revision,Math.round(area.clientWidth)]);
+      if(key!==heightKey){heightKey=key;measuredHeights.clear();}
+      const start=(S.students.page-1)*S.students.page_size;
+      table.querySelectorAll('tbody tr[data-student-row]').forEach((row,index)=>{
+        measuredHeights.set(start+index,Math.max(rowHeight,row.getBoundingClientRect().height));
+      });
+      // Names/classes may wrap. Keep measured boundary rows when a smaller page
+      // omits them, so auto capacity neither cuts a row nor oscillates on resize.
+      const available=area.getBoundingClientRect().height-header-horizontal-2;
+      let capacity=0,used=0;
+      while(capacity<100){
+        const height=measuredHeights.get(start+capacity)||rowHeight;
+        if(used+height>available)break;
+        used+=height;capacity++;
+      }
+      capacity=Math.max(1,capacity);
       if(capacity!==S.filters.page_size){
         const anchor=(S.filters.page-1)*S.filters.page_size;
         S.filters.page_size=capacity;S.filters.page=Math.floor(anchor/capacity)+1;
@@ -86,7 +102,7 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
   }
   async function exportScores(mode='scope') {
     if(S.exportBusy||S.listLoading||S.listError)return;
-    const payload={all_students:false,college_ids:[],class_ids:[],below_90:mode==='below'};
+    const payload={all_students:false,college_ids:[],class_ids:[],below_60:mode==='below'};
     if(mode==='students'){
       if(!selectedStudentCount(S)){toast('请勾选学生，或使用表头全选当前筛选的全部学生。',true);return;}
       applyStudents(payload);
@@ -103,11 +119,11 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
     closeControl();S.exportBusy=true;render();
     try {
       // Reject old servers that would silently omit students with no grade.
-      if(payload.below_90||payload.student_filter?.score_filter==='below_90'){
+      if(payload.below_60||payload.student_filter?.score_filter==='below_60'){
         const healthResponse=await fetch('/api/health',{credentials:'same-origin',cache:'no-store'});
         if(!healthResponse.ok)throw new Error('无法核对不合格导出规则，请稍后重试。');
         const health=await healthResponse.json();S.health=health;
-        if(Number(health.directory_api_version||0)<4){S.directoryOutdated=true;throw new Error(DIRECTORY_UPDATE_MESSAGE);}
+        if(Number(health.directory_api_version||0)<6){S.directoryOutdated=true;throw new Error(DIRECTORY_UPDATE_MESSAGE);}
       }
       const response=await fetch('/api/students/export.xlsx',{method:'POST',credentials:'same-origin',cache:'no-store',
         headers:{'Content-Type':'application/json','X-Requested-With':'StudentScore'},body:JSON.stringify(payload)});
@@ -119,14 +135,15 @@ export function installDirectoryController(S,{render,loadStudents,toast}) {
         if(response.status===422&&S.directoryOutdated)throw new Error(DIRECTORY_UPDATE_MESSAGE);
         throw new Error(typeof error.detail==='string'?error.detail:'导出失败，请刷新列表后重新选择。');
       }
-      if(Number(response.headers.get('X-Export-Workbook-Version')||0)<3){
-        throw new Error('当前后端尚未加载统一≥90合格规则及新版导出说明表。请在启动窗口按 Ctrl+C 后重新启动网站，再按 Ctrl+F5 刷新。');
+      const workbookVersion=Number(response.headers.get('X-Export-Workbook-Version')||0);
+      if(!Number.isFinite(workbookVersion)||workbookVersion<5){
+        throw new Error('当前后端尚未加载统一≥60合格规则及新版导出说明表。请在启动窗口按 Ctrl+C 后重新启动网站，再按 Ctrl+F5 刷新。');
       }
       const blob=await response.blob(),url=URL.createObjectURL(blob);
       const link=document.createElement('a');link.href=url;
       link.download=mode==='below'?'不合格名单-含无成绩.xlsx':mode==='students'?'勾选学生成绩.xlsx':'学院班级成绩.xlsx';
       document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
-      toast(`已导出 ${response.headers.get('X-Export-Students')||''} 人，按班级分表，末尾附导出说明。`);
+      toast(`已导出 ${response.headers.get('X-Export-Students')||''} 人，按班级分表，末尾附导出说明。${workbookVersion<6?'本次兼容旧版格式，不含答题时间。':''}`);
     } catch(error){toast(error.message||'无法连接服务，导出失败。',true);}
     finally {S.exportBusy=false;render();}
   }

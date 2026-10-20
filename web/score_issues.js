@@ -1,4 +1,4 @@
-import {h,num,percent,date,icon,blank} from './components.js';
+import {h,num,percent,date,duration,examTimeTitle,icon,blank} from './components.js';
 import {closeControl,enhanceControls,captureControl,restoreControl} from './custom_controls.js';
 import {updateHTML} from './safe_dom.js';
 
@@ -15,9 +15,10 @@ function pager(data,prefix,loading) {
 }
 function peopleTable(data,loading=false) {
   if(!data.items.length)return blank('暂无异常人员记录','已保存的导入出现异常后，会自动汇总在这里；可以调整搜索或分类。');
-  return `<div class="table-scroll issue-table-scroll" id="issue-people-table" aria-busy="${loading}"><table class="issue-table"><thead><tr><th>学号</th><th>姓名记录</th><th>最高记录得分率</th><th>出现 / 批次</th><th>异常类型与原因</th><th>最近出现</th><th>操作</th></tr></thead><tbody>${data.items.map(person=>`<tr data-person-key="${h(person.key)}">
+  return `<div class="table-scroll issue-table-scroll" id="issue-people-table" aria-busy="${loading}"><table class="issue-table"><thead><tr><th>学号</th><th>姓名记录</th><th>最高记录得分率</th><th>对应答题时长</th><th>出现 / 批次</th><th>异常类型与原因</th><th>最近出现</th><th>操作</th></tr></thead><tbody>${data.items.map(person=>`<tr data-person-key="${h(person.key)}">
     <td class="mono issue-id">${h(person.student_id||'学号无效 / 未填写')}${!person.student_id&&person.raw_ids.length?`<div class="cell-secondary">${h(joined(person.raw_ids))}</div>`:''}</td><td class="issue-person-name"><b>${h(joined(person.names))}</b>${person.colleges.length||person.classes.length?`<div class="cell-secondary">${h([...person.colleges,...person.classes].join(' / '))}</div>`:''}</td>
     <td><strong class="rate-value">${percent(person.best_score_rate)}</strong>${person.best_batch_id?`<div class="cell-secondary">批次 #${person.best_batch_id} · 第 ${person.best_row_number} 行</div>`:'<div class="cell-secondary">原始分数见出现明细</div>'}</td>
+    <td class="duration-cell" title="${h(examTimeTitle({exam_started_at:person.best_exam_started_at,exam_finished_at:person.best_exam_finished_at}))}">${duration(person.best_answer_duration_seconds)}</td>
     <td><b>${num(person.occurrence_count)} 次</b><div class="cell-secondary">${num(person.batch_count)} 个批次</div></td>
     <td class="issue-reasons"><div class="issue-badges">${kindBadges(person.kinds)}</div><p title="${h(person.reasons.join('；'))}">${h(person.reasons.join('；')||'详见原始记录')}</p></td>
     <td>${h(date(person.last_seen))}<div class="cell-secondary">批次 #${person.latest_batch_id}</div></td><td><button class="btn secondary small" data-action="issue-person" data-key="${h(person.key)}" ${loading?'disabled':''}>出现记录</button></td>
@@ -30,10 +31,10 @@ function detailView(state) {
   if(state.detailError&&!data)return `<section class="issue-detail" id="issue-detail"><div class="info-box error" role="alert">${h(state.detailError)}<button class="btn secondary small" data-action="issue-detail-retry">重试</button></div></section>`;
   if(!data)return '';
   return `<section class="issue-detail" id="issue-detail" aria-busy="${state.detailLoading}"><div class="card-header"><div><h3>${h(joined(data.person.names))} · ${h(data.person.student_id||'学号无效 / 未填写')}</h3><p class="card-subtitle">${state.detailLoading?'正在更新出现记录，暂时保留上次结果':'最高记录 '+percent(data.person.best_score_rate)+' · 保留每次原始分数，不写入正式成绩'}</p></div><div class="history-tools">${exportMenu({key:state.selectedKey},true,state.detailLoading)}<button class="icon-btn" data-action="issue-detail-close" aria-label="收起出现记录">${icon('close')}</button></div></div>
-    ${state.detailError?`<div class="info-box error" role="alert">更新失败：${h(state.detailError)}；已保留上次结果<button class="btn secondary small" data-action="issue-detail-retry">重试</button></div>`:''}<div class="table-scroll"><table class="issue-table"><thead><tr><th>批次 / 时间</th><th>原表行</th><th>原学号 / 姓名</th><th>原状态</th><th>原始分数</th><th>可识别得分率</th><th>异常原因</th></tr></thead><tbody>${data.items.map(row=>`<tr data-row-key="${row.batch_id}:${row.row_number}">
+    ${state.detailError?`<div class="info-box error" role="alert">更新失败：${h(state.detailError)}；已保留上次结果<button class="btn secondary small" data-action="issue-detail-retry">重试</button></div>`:''}<div class="table-scroll"><table class="issue-table"><thead><tr><th>批次 / 时间</th><th>原表行</th><th>原学号 / 姓名</th><th>原状态</th><th>原始分数</th><th>可识别得分率</th><th>答题时长</th><th>异常原因</th></tr></thead><tbody>${data.items.map(row=>`<tr data-row-key="${row.batch_id}:${row.row_number}">
       <td><b>#${row.batch_id} · ${h(row.batch_name)}</b><div class="cell-secondary">${h(date(row.created_at))} · ${row.batch_state==='reverted'?'已撤销（记录保留）':'已保存'}</div><div class="cell-secondary">${h(row.filename)}</div></td>
       <td>${row.row_number}</td><td class="issue-person-name"><div class="mono">${h(row.raw_id||'未填写')}</div><b>${h(row.source_name||'未填写')}</b>${row.name&&row.name!==row.source_name?`<div class="cell-secondary">名单姓名：${h(row.name)}</div>`:''}</td>
-      <td>${h(row.raw_status||'未填写')}</td><td class="issue-original">${h(row.raw_rate||'未填写')}<div class="cell-secondary">${h(row.raw_result)}</div></td><td class="rate-value">${percent(row.score_rate)}</td>
+      <td>${h(row.raw_status||'未填写')}</td><td class="issue-original">${h(row.raw_rate||'未填写')}<div class="cell-secondary">${h(row.raw_result)}</div></td><td class="rate-value">${percent(row.score_rate)}</td><td class="duration-cell" title="${h(examTimeTitle(row))}">${duration(row.answer_duration_seconds)}<div class="cell-secondary">${h(row.raw_started_at||'未提供')} → ${h(row.raw_finished_at||'未提供')}</div></td>
       <td class="issue-reasons">${kindBadges([row.action])}<p>${h(row.errors.join('；'))}</p></td>
     </tr>`).join('')}</tbody></table></div>${pager(data,'issue-detail',state.detailLoading)}</section>`;
 }

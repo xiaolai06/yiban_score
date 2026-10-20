@@ -17,26 +17,26 @@ from tests.test_scores import preview as score_preview
 def client(tmp_path):
     with TestClient(create_app(tmp_path/'follow.sqlite3',testing=True)) as c:
         add(c,[row('0001',status='已完成',rate=None),row('0002',status='未开始',rate=0),
-               row('0003',status='进行中',rate=95),row('0004',name='=1+1',status='已完成',rate=89.99),
-               row('0005',status='已录入',rate=0),row('0006',status='已完成',rate=90),
-               row('0007',status='进行中',rate=90),row('0008',status='缺考',rate=20),
+               row('0003',status='进行中',rate=95),row('0004',name='=1+1',status='已完成',rate=59.99),
+               row('0005',status='已录入',rate=0),row('0006',status='已完成',rate=60),
+               row('0007',status='进行中',rate=60),row('0008',status='缺考',rate=20),
                row('0009',status='已录入',rate=100),row('0010',status='进行中',rate=None),
                row('0011',college='其他示例学院',status='已完成',rate=90.01)])
         yield c
 
 
-def test_categories_de_duplicate_without_mislabeling_90_or_progress(client):
+def test_categories_de_duplicate_without_mislabeling_60_or_progress(client):
     before=client.get('/api/students?page_size=100').json()
     result=client.get('/api/follow-up').json()
     assert result['total']==result['counts']['pending']==8
     assert result['scope_students']==11
     assert result['counts']=={'pending':8,'missing':2,'not_started':1,'in_progress':3,
-                             'completed_low':2,'other_low':2,'at_90':2,'issues':0}
+                             'completed_low':2,'other_low':2,'at_60':2,'issues':0}
     assert {item['student_id'] for item in result['items']}=={'0001','0002','0003','0004','0005','0007','0008','0010'}
     assert next(item for item in result['items'] if item['student_id']=='0003')['qualified']
-    ninety=client.get('/api/follow-up?kind=at_90').json()
-    assert {item['student_id'] for item in ninety['items']}=={'0006','0007'}
-    assert all(item['qualified'] for item in ninety['items'])
+    boundary=client.get('/api/follow-up?kind=at_60').json()
+    assert {item['student_id'] for item in boundary['items']}=={'0006','0007'}
+    assert all(item['qualified'] for item in boundary['items'])
     assert client.get('/api/follow-up?kind=completed_low').json()['total']==2
     assert client.get('/api/students?page_size=100').json()==before
 
@@ -45,23 +45,23 @@ def test_all_views_and_workbook_agree_with_progress_kept_separate(client):
     stats=client.get('/api/stats').json()
     students=client.get('/api/students').json()
     assert stats['qualified']==students['qualified']==5
-    assert students['at_90']==2 and students['below_90']==6
+    assert students['at_60']==2 and students['below_90']==6
     assert students['total']==students['qualified']+students['below_90']
-    assert students['settled']==6 and students['average_rate']==65
+    assert students['settled']==6 and students['average_rate']==55
     response=client.post('/api/students/export.xlsx',headers={'X-Requested-With':'StudentScore'},json={'all_students':True})
     book=read_workbook(response.content,'synthetic.xlsx')
     assert book[-1].cell(1,7).value==5
-    assert client.get('/api/health').json()['directory_api_version']==4
-    assert client.get('/api/health').json()['follow_up_api_version']==1
+    assert client.get('/api/health').json()['directory_api_version']==6
+    assert client.get('/api/health').json()['follow_up_api_version']==4
     low=client.get('/api/students?score_filter=below_90&page_size=100').json()
     assert not {'0003','0006','0007','0009','0011'}&{item['student_id'] for item in low['items']}
     # Unfinished numeric values remain visible and unchanged, not settled for averages.
-    assert client.get('/api/students/0007').json()['score_rate']==90
+    assert client.get('/api/students/0007').json()['score_rate']==60
 
 
 @pytest.mark.parametrize('kind,ids',[('missing',{'0001','0010'}),('not_started',{'0002'}),
     ('in_progress',{'0003','0007','0010'}),('completed_low',{'0004','0005'}),('other_low',{'0002','0008'}),
-    ('at_90',{'0006','0007'})])
+    ('at_60',{'0006','0007'})])
 def test_category_filters_exact_people(client,kind,ids):
     result=client.get('/api/follow-up',params={'kind':kind}).json()
     assert {item['student_id'] for item in result['items']}==ids
@@ -74,7 +74,7 @@ def test_scope_search_and_pagination_are_independent_of_visible_page(client):
     assert r['total']==8 and len(r['items'])==1 and r['page']==2 and r['pages']==8
     assert r['counts']['missing']==2
     r=client.get('/api/follow-up?q=0007').json()
-    assert r['total']==1 and r['counts']['pending']==r['counts']['in_progress']==r['counts']['at_90']==1
+    assert r['total']==1 and r['counts']['pending']==r['counts']['in_progress']==r['counts']['at_60']==1
     assert client.get('/api/follow-up?q=%27%20OR%201%3D1').json()['total']==0
     assert client.get('/api/follow-up?q=不存在').json()['counts']['pending']==0
     assert client.get('/api/follow-up?page=999').json()['page']==1
@@ -88,12 +88,12 @@ def test_full_export_has_scope_reasons_fonts_and_no_formula_execution(client,for
     response=client.get(f'/api/follow-up/export.{format}',params={'expected_revision':r['revision']})
     assert response.status_code==200
     assert response.headers['X-Export-Records']=='8'
-    assert response.headers['X-Follow-Up-Api-Version']=='1'
+    assert response.headers['X-Follow-Up-Api-Version']=='4'
     if format=='csv':
         data=list(csv.DictReader(io.StringIO(response.content.decode('utf-8-sig'))))
         assert len(data)==8 and {entry['学号'] for entry in data}=={entry['student_id'] for entry in r['items']}|{'0002','0003','0004','0005','0007','0008','0010'}
         assert next(entry for entry in data if entry['学号']=='0004')['姓名']=="'=1+1"
-        assert next(entry for entry in data if entry['学号']=='0007')['合格情况']=='已合格（≥90）'
+        assert next(entry for entry in data if entry['学号']=='0007')['合格情况']=='已合格（≥60）'
     else:
         book=read_workbook(response.content,'follow.xlsx')
         assert len(book)==1 and book[0].rows==9

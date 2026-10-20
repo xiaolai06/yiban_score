@@ -10,9 +10,10 @@ import {installDirectoryController, DIRECTORY_UPDATE_MESSAGE} from './directory_
 import {loadOverviewStats} from './overview_stats.js';
 import {completeDirectoryStatistics} from './directory_stats.js';
 import {readBaseSnapshot} from './read_snapshots.js';
+import {PASS_SCORE} from './grade_values.js';
 
-const emptyStats = {students:0,colleges:0,classes:0,recorded:0,qualified:0,average_rate:null,statuses:[],colleges_detail:[]};
-const emptyList = {items:[],total:0,recorded:0,qualified:null,below_90:null,settled:0,average_rate:null,page:1,page_size:10,pages:1};
+const emptyStats = {students:0,colleges:0,classes:0,recorded:0,completed:null,qualified:null,average_rate:null,statuses:[],colleges_detail:[]};
+const emptyList = {items:[],total:0,recorded:0,qualified:null,below_60:null,at_60:null,settled:0,average_rate:null,page:1,page_size:10,pages:1};
 const defaultFilters = () => ({q:'',college_id:null,class_id:null,status:'',score_filter:'all',page:1,page_size:10,sort:'student_id',order:'asc'});
 // Old bookmarks now open score details; there is no separate student module.
 if (location.hash==='#students') history.replaceState(null,'','#scores');
@@ -112,7 +113,10 @@ async function refreshBase({includeHistory=true}={}) {
   if(!snapshot)return;
   const {stats,hierarchy,history}=snapshot;
   if(S.stats.revision!==stats.revision)studentCache.clear();
-  S.stats=stats;S.hierarchy=hierarchy.colleges;if(history)S.history=history.items;
+  // Never render an old server's 90-point totals while recalculating or on failure.
+  S.stats=stats.pass_score===PASS_SCORE?stats:{...stats,completed:null,qualified:null,
+    colleges_detail:stats.colleges_detail?.map(co=>({...co,completed:null,qualified:null}))};
+  S.hierarchy=hierarchy.colleges;if(history)S.history=history.items;
   const classes=new Set(S.hierarchy.flatMap(co=>co.classes.map(cl=>cl.id)));
   if(S.exportAll)S.exportClasses=classes;
   else for(const id of S.exportClasses)if(!classes.has(id))S.exportClasses.delete(id);
@@ -130,7 +134,7 @@ async function initialize() {
     const [health]=await Promise.all([api('/api/health'),refreshBase()]);
     if(seq!==bootSequence)return;
     S.health=health;
-    S.directoryOutdated=Number(S.health.directory_api_version||0)<4;
+    S.directoryOutdated=Number(S.health.directory_api_version||0)<6;
     if(S.view==='score-import')await scoreController.history();
     S.ready=true;
     render();
@@ -249,8 +253,8 @@ async function loadStudents({refresh=false}={}) {
   if (S.view==='scores') render();
   try {
     if(refresh&&S.directoryOutdated)S.health=await api('/api/health',{signal});
-    S.directoryOutdated=Number(S.health?.directory_api_version||0)<4;
-    if(S.directoryOutdated&&S.filters.score_filter==='below_90')throw new Error(DIRECTORY_UPDATE_MESSAGE);
+    S.directoryOutdated=Number(S.health?.directory_api_version||0)<6;
+    if(S.directoryOutdated&&S.filters.score_filter==='below_60')throw new Error(DIRECTORY_UPDATE_MESSAGE);
     const [list]=await Promise.all([api(`/api/students?${qs}`,{signal}),refresh?refreshBase({includeHistory:false}):null]);
     let result=list;
     if (seq!==listSequence) return;
@@ -261,7 +265,7 @@ async function loadStudents({refresh=false}={}) {
       if(seq!==listSequence)return;
       if(result.revision!==S.stats.revision)throw new Error('刷新期间名单持续变化，请再次读取，未混用不同版本的统计。');
     }
-    const missingStats=['qualified','below_90','at_90'].some(key=>result[key]===undefined)||!Number.isInteger(result.valid_scores??result.settled);
+    const missingStats=['qualified','below_60','at_60'].some(key=>result[key]===undefined)||!Number.isInteger(result.valid_scores??result.settled);
     if(missingStats||S.directoryOutdated){
       try {
         const recovered=await completeDirectoryStatistics(api,qs.toString(),()=>seq===listSequence);
@@ -270,11 +274,11 @@ async function loadStudents({refresh=false}={}) {
       } catch(error){
         if(seq!==listSequence)return;
         S.directoryStatsError=error.message;
-        result={...result,qualified:null,below_90:null,at_90:null};
+        result={...result,qualified:null,below_60:null,at_60:null};
       }
     }
     S.students=result;S.studentsLoaded=true;S.listContext=context;S.filters.page=result.page;
-    S.directoryOutdated=Number(S.health?.directory_api_version||0)<4||missingStats;
+    S.directoryOutdated=Number(S.health?.directory_api_version||0)<6||missingStats;
     if(S.exportAllStudents)S.selectedStudentTotal=result.total;
     if(!missingStats&&!S.directoryOutdated){
       studentCache.set(cacheKey,{data:result,revision:result.revision??S.stats.revision,time:Date.now()});
@@ -375,7 +379,7 @@ document.addEventListener('click',async event=>{
       case 'retry-overview': button.disabled=true;await refreshBase();render();break;
       case 'overview-sort': {
         const key=button.dataset.sort;
-        if(!['name','classes','students','recorded','qualified'].includes(key))break;
+        if(!['name','classes','students','completed','qualified'].includes(key))break;
         const current=S.overviewSort;
         let order=key==='name'?'asc':'desc';
         if(current.key===key)order=current.order==='asc'?'desc':'asc';

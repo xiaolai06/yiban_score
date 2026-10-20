@@ -6,6 +6,11 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
   const issues=installScoreIssues({api});
   const g=()=>S.score;
   const invalidate=()=>{g().preview=null;g().skip=false;g().error='';rowSeq++;};
+  function compatibleMapping(mapping,upload=g().upload) {
+    const result={...mapping};
+    if(upload?.timeSupported===false){delete result.exam_started_at;delete result.exam_finished_at;}
+    return result;
+  }
   async function work(fn) {
     if(g().busy)return;
     g().busy=true;g().error='';render();
@@ -32,8 +37,9 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
       invalidate();g().committed=null;g().upload=null;g().audit=null;
       const form=new FormData();form.append('file',file);
       const u=await api('/api/scores/analyze',{method:'POST',body:form});
+      u.timeSupported=Boolean(u.fields?.exam_started_at&&u.fields?.exam_finished_at);
       const sh=u.sheets[u.selected_sheet];
-      Object.assign(g(),{upload:u,sheetIndex:u.selected_sheet,headerRow:sh.header_row,headerDraft:null,mapping:{...sh.mapping},name:file.name.replace(/\.[^.]+$/,'').slice(0,120)});
+      Object.assign(g(),{upload:u,sheetIndex:u.selected_sheet,headerRow:sh.header_row,headerDraft:null,mapping:compatibleMapping(sh.mapping,u),name:file.name.replace(/\.[^.]+$/,'').slice(0,120)});
       toast(`已识别 ${u.format.encoding}，请核对列映射与清洗规则。`);
     });
   }
@@ -49,12 +55,12 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
           const header=Number(document.getElementById('score-header')?.value??G.headerDraft??G.headerRow);
           if(!Number.isInteger(header)||header<1)throw new Error('表头行必须是正整数。');
           const sh=await api(`/api/scores/uploads/${G.upload.upload_id}/sheet?sheet_index=${G.sheetIndex}&header_row=${header}`);
-          G.upload.sheets[G.sheetIndex]=sh;G.headerRow=header;G.headerDraft=null;G.mapping={...sh.mapping};invalidate();
+          G.upload.sheets[G.sheetIndex]=sh;G.headerRow=header;G.headerDraft=null;G.mapping=compatibleMapping(sh.mapping);invalidate();
         });return;
         case 'score-preview':await work(async()=>{
           if(G.headerDraft!==null&&Number(G.headerDraft)!==G.headerRow)throw new Error('表头行已修改，请先点击“重新识别”。');
           invalidate();
-          G.preview=await api('/api/scores/preview',{method:'POST',body:JSON.stringify({upload_id:G.upload.upload_id,sheet_index:G.sheetIndex,header_row:G.headerRow,mapping:G.mapping,batch_name:G.name,scale:G.scale,zero_policy:G.zeroPolicy,update_mode:'keep_highest',protect_completed:true})});
+          G.preview=await api('/api/scores/preview',{method:'POST',body:JSON.stringify({upload_id:G.upload.upload_id,sheet_index:G.sheetIndex,header_row:G.headerRow,mapping:compatibleMapping(G.mapping),batch_name:G.name,scale:G.scale,zero_policy:G.zeroPolicy,update_mode:'keep_highest',protect_completed:true})});
           await rows();
           const summary=G.preview.summary;
           toast(`校验完成：新增 ${summary.new_scores||0} 条，更新 ${summary.update-(summary.new_scores||0)} 条，异常 ${summary.issue_rows} 条。`);
@@ -85,7 +91,7 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
         case 'score-audit-next':await work(()=>audit(G.audit.batch.id,G.audit.kind,G.audit.page+1));return;
         case 'score-revert':{
           const id=Number(button.dataset.id);
-          if(!window.confirm(`确认撤销成绩导入批次 #${id}？\n仅恢复本批修改的状态与得分率；如学生已有后续修改，将整批拒绝撤销。`))return;
+          if(!window.confirm(`确认撤销成绩导入批次 #${id}？\n恢复本批修改的状态、得分率及答题时间；如学生已有后续修改，将整批拒绝撤销。`))return;
           await work(async()=>{
             const result=await api(`/api/scores/batches/${id}/revert`,{method:'POST',body:JSON.stringify({confirm:true})});
             invalidate();G.committed=null;G.audit=null;
@@ -100,9 +106,9 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
     if(t.id==='score-file'){await upload(t.files?.[0]);return;}
     if(G.busy)return;
     if(t.id==='score-sheet'){
-      G.sheetIndex=Number(t.value);const sh=G.upload.sheets[G.sheetIndex];G.headerRow=sh.header_row;G.headerDraft=null;G.mapping={...sh.mapping};invalidate();render();return;
+      G.sheetIndex=Number(t.value);const sh=G.upload.sheets[G.sheetIndex];G.headerRow=sh.header_row;G.headerDraft=null;G.mapping=compatibleMapping(sh.mapping);invalidate();render();return;
     }
-    if(t.dataset.scoreMap){if(t.value==='')delete G.mapping[t.dataset.scoreMap];else G.mapping[t.dataset.scoreMap]=Number(t.value);invalidate();render();return;}
+    if(t.dataset.scoreMap){if(G.upload?.timeSupported===false&&['exam_started_at','exam_finished_at'].includes(t.dataset.scoreMap))return;if(t.value==='')delete G.mapping[t.dataset.scoreMap];else G.mapping[t.dataset.scoreMap]=Number(t.value);invalidate();render();return;}
     const map={'score-scale':'scale','score-zero':'zeroPolicy'};
     if(map[t.id]){G[map[t.id]]=t.value;invalidate();render();return;}
     if(t.id==='score-skip'){G.skip=t.checked;render();return;}

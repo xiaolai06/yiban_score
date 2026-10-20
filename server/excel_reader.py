@@ -56,6 +56,7 @@ class Sheet:
     rows: int = 0
     cols: int = 0
     column_counts: dict[int, int] = field(default_factory=dict)  # CSV structural validation
+    date_1904: bool = False  # Excel serial-date epoch, used only by explicit time mappings
 
     def put(self, row: int, col: int, cell: Cell, *, replace: bool = False) -> None:
         if (cell.value is None or cell.value == '') and not cell.formula and not cell.error:
@@ -258,10 +259,13 @@ def read_xls(data: bytes) -> list[Sheet]:
             break
     if not globals_ or globals_[0][0] != 0x0809 or struct.unpack_from('<H', globals_[0][1])[0] != 0x0600:
         raise WorkbookError('仅支持 Excel 97–2003 BIFF8 .xls；请另存为 .xlsx。')
-    sst, bounds, formats, xfs = [], [], {9: '0%', 10: '0.00%'}, []
+    sst, bounds, formats, xfs = [], [], {9: '0%', 10: '0.00%', 14: 'yyyy-mm-dd', 22: 'yyyy-mm-dd hh:mm'}, []
+    date_1904 = False
     for i, (rid, payload, _) in enumerate(globals_):
         if rid == 0x002F:
             raise WorkbookError('不支持加密工作簿，请解除文件密码后导入。')
+        if rid == 0x0022 and len(payload) >= 2:
+            date_1904 = bool(struct.unpack_from('<H', payload)[0])
         if rid == 0x0085 and len(payload) >= 8 and payload[5] == 0:
             bounds.append((struct.unpack_from('<I', payload)[0], StringChunks([payload[6:]]).unicode(short=True), bool(payload[4])))
         elif rid == 0x041E:
@@ -283,7 +287,7 @@ def read_xls(data: bytes) -> list[Sheet]:
         raise WorkbookError('工作表数量无效（支持 1–50 张）。')
     sheets = []
     for offset, name, hidden in bounds:
-        sh = Sheet(name=name, hidden=hidden)
+        sh = Sheet(name=name, hidden=hidden, date_1904=date_1904)
         pending_string = None
         for rid, p, _ in records(stream, offset):
             if rid == 0x000A:
@@ -402,7 +406,7 @@ def read_xlsx(data: bytes) -> list[Sheet]:
                 strings.append(''.join(x.text or '' for x in si.iter(NS + 't')))
                 if len(strings) > MAX_CELLS:
                     raise WorkbookError('共享字符串过多。')
-        formats, xfs = {9: '0%', 10: '0.00%'}, []
+        formats, xfs = {9: '0%', 10: '0.00%', 14: 'yyyy-mm-dd', 22: 'yyyy-mm-dd hh:mm'}, []
         if 'xl/styles.xml' in names:
             st = xml_parse(z.read('xl/styles.xml'))
             for f in st.findall(f'{NS}numFmts/{NS}numFmt'):
@@ -417,7 +421,9 @@ def read_xlsx(data: bytes) -> list[Sheet]:
             target = targets.get(item.attrib.get(RID))
             if not target or target not in names or not target.endswith('.xml'):
                 raise WorkbookError('工作表关系不完整。')
-            sh = Sheet(name=item.attrib['name'], hidden=item.attrib.get('state', 'visible') != 'visible')
+            properties = wb.find(NS + 'workbookPr')
+            date_1904 = properties is not None and properties.attrib.get('date1904', '').lower() in {'1', 'true'}
+            sh = Sheet(name=item.attrib['name'], hidden=item.attrib.get('state', 'visible') != 'visible', date_1904=date_1904)
             root = xml_parse(z.read(target))
             coordinates = set()
             for c in root.findall(f'{NS}sheetData/{NS}row/{NS}c'):

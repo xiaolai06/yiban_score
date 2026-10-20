@@ -19,6 +19,7 @@ from fastapi import File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .database import STUDENT_SELECT, bump_revision, connection, read_snapshot, revision
+from .exam_time import format_duration
 from .score_import import (
     ACTIONS,
     FIELDS,
@@ -98,7 +99,9 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
         writer = csv.writer(out)
         writer.writerow(['记录行号', '原学号', '清洗后学号', '原姓名', '名单姓名', '名单学院', '名单班级',
                          '原学院', '原班级', '原状态', '原得分率', '原成绩/百分比', '清洗后状态',
-                         '清洗后得分率(%)', '处理结果', '清洗说明', '异常说明', '导入前得分率(%)', '合并后得分率(%)'])
+                         '清洗后得分率(%)', '处理结果', '清洗说明', '异常说明', '导入前得分率(%)', '合并后得分率(%)',
+                         '原开始时间', '原结束时间', '清洗后开始时间', '清洗后结束时间', '本次答题时长',
+                         '导入前答题时长', '合并后答题时长'])
         for r in rows:
             before = r.get('before') or {}
             after = r.get('after') or {}
@@ -112,7 +115,10 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                       r['score_rate'] if r['score_rate'] is not None else '', ACTIONS[r['action']],
                       '; '.join(r['notes']), '; '.join(r['errors']),
                       before.get('score_rate') if before.get('score_rate') is not None else '',
-                      after.get('score_rate') if after.get('score_rate') is not None else '']
+                      after.get('score_rate') if after.get('score_rate') is not None else '',
+                      r.get('raw_started_at', ''), r.get('raw_finished_at', ''),
+                      r.get('exam_started_at'), r.get('exam_finished_at'), format_duration(r.get('answer_duration_seconds')),
+                      format_duration(before.get('answer_duration_seconds')), format_duration(after.get('answer_duration_seconds'))]
             writer.writerow([safe_csv(value) for value in values])
         return csv_response(out.getvalue(), filename)
 
@@ -233,10 +239,13 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                     after_version = None
                     if row['action'] == 'update':
                         after_version = row['before']['version'] + 1
+                        after = row['after']
                         con.execute('''UPDATE students SET status=?,score_rate=?,score_batch_id=?,
+                            exam_started_at=?,exam_finished_at=?,answer_duration_seconds=?,
                             score_imported_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),version=version+1,
                             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE student_id=?''',
-                            (row['status'], row['score_rate'], batch_id, row['student_id']))
+                            (after['status'], after['score_rate'], batch_id, after.get('exam_started_at'),
+                             after.get('exam_finished_at'), after.get('answer_duration_seconds'), row['student_id']))
                         con.execute('INSERT INTO student_changes(student_id,action,before_json,after_json) VALUES(?,?,?,?)',
                             (row['student_id'], 'score_import', json.dumps(row['before'], ensure_ascii=False),
                              json.dumps(dict(row['after'], score_batch_id=batch_id, version=after_version), ensure_ascii=False)))
@@ -319,8 +328,10 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                     record = saved_record(row['record_json'])
                     old = record['before']
                     con.execute('''UPDATE students SET status=?,score_rate=?,score_batch_id=?,score_imported_at=?,
+                        exam_started_at=?,exam_finished_at=?,answer_duration_seconds=?,
                         version=version+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE student_id=?''',
-                        (old['status'], old['score_rate'], old.get('score_batch_id'), old.get('score_imported_at'), row['student_id']))
+                        (old['status'], old['score_rate'], old.get('score_batch_id'), old.get('score_imported_at'),
+                         old.get('exam_started_at'), old.get('exam_finished_at'), old.get('answer_duration_seconds'), row['student_id']))
                     con.execute('INSERT INTO student_changes(student_id,action,before_json,after_json) VALUES(?,?,?,?)',
                         (row['student_id'], 'score_import_revert', json.dumps(record['after'], ensure_ascii=False),
                          json.dumps(old, ensure_ascii=False)))

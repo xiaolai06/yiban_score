@@ -8,14 +8,15 @@ from typing import Literal
 from fastapi import HTTPException, Query, Response
 
 from .database import connection, revision
-from .grade_rules import has_numeric_score, is_qualified
+from .exam_time import format_duration
+from .grade_rules import PASS_SCORE, has_numeric_score, is_qualified
 from .score_api import saved_record
 from .score_issues import ISSUE_LABELS, filtered_groups, issue_snapshot
 from .table_export import build_table_workbook
 
-Kind = Literal['pending', 'missing', 'not_started', 'in_progress', 'completed_low', 'other_low', 'at_90', 'issues']
+Kind = Literal['pending', 'missing', 'not_started', 'in_progress', 'completed_low', 'other_low', 'at_60', 'issues']
 LABELS = {'pending': '全部待跟进', 'missing': '未录入成绩', 'not_started': '未开始', 'in_progress': '进行中',
-          'completed_low': '已完成低于90', 'other_low': '其他低分需核对', 'at_90': '恰好90（已合格）', 'issues': '历史异常核对'}
+          'completed_low': '已完成低于60', 'other_low': '其他低分需核对', 'at_60': f'恰好{PASS_SCORE}（已合格）', 'issues': '历史异常核对'}
 
 
 def categories(student) -> list[str]:
@@ -28,10 +29,10 @@ def categories(student) -> list[str]:
     if status == '进行中':
         result.append('in_progress')
     if has_numeric_score(rate):
-        if rate < 90:
+        if rate < PASS_SCORE:
             result.append('completed_low' if status in {'已完成', '已录入'} else 'other_low')
-        elif rate == 90:
-            result.append('at_90')
+        elif rate == PASS_SCORE:
+            result.append('at_60')
     return result
 
 
@@ -46,6 +47,7 @@ def snapshot(con, q, college_id, class_id):
     # The scope is chosen by actual roster IDs, never guessed from source text.
     scoped = [dict(row) for row in con.execute('''
         SELECT s.student_id,s.name,s.class_id,s.status,s.score_rate,
+               s.exam_started_at,s.exam_finished_at,s.answer_duration_seconds,
                c.name AS class_name,c.college_id,co.name AS college_name
         FROM students s JOIN classes c ON c.id=s.class_id JOIN colleges co ON co.id=c.college_id
         WHERE (? IS NULL OR c.college_id=?) AND (? IS NULL OR s.class_id=?)
@@ -58,7 +60,7 @@ def snapshot(con, q, college_id, class_id):
     for student in students:
         for kind in student['categories']:
             counts[kind] += 1
-        if any(kind != 'at_90' for kind in student['categories']):
+        if any(kind != 'at_60' for kind in student['categories']):
             counts['pending'] += 1  # De-duplicate overlapping missing/progress/low categories.
     issues = []
     groups = issue_snapshot(con, saved_record, college_id=college_id, class_id=class_id, exclude_removed=True)
@@ -73,6 +75,9 @@ def snapshot(con, q, college_id, class_id):
             'status': current['status'] if current else '名单外 / 无法绑定',
             'score_rate': current['score_rate'] if current else None, 'historical_rate': group['best_score_rate'],
             'qualified': is_qualified(current['score_rate']) if current else None,
+            'exam_started_at': current['exam_started_at'] if current else None,
+            'exam_finished_at': current['exam_finished_at'] if current else None,
+            'answer_duration_seconds': current['answer_duration_seconds'] if current else None,
             'category_labels': [ISSUE_LABELS[kind] for kind in group['kinds']], 'reasons': group['reasons'],
             'occurrence_count': group['occurrence_count'], 'batch_count': group['batch_count'],
             'record_type': 'issue', 'latest_batch_id': group['latest_batch_id']})
@@ -84,7 +89,7 @@ def select(students, issues, kind):
     if kind == 'issues':
         return issues
     if kind == 'pending':
-        return [row for row in students if any(value != 'at_90' for value in row['categories'])]
+        return [row for row in students if any(value != 'at_60' for value in row['categories'])]
     return [row for row in students if kind in row['categories']]
 
 
@@ -92,14 +97,16 @@ def export_records(rows, kind):
     headers = ['学号', '姓名', '学院', '班级', '当前状态', '当前得分率(%)', '合格情况', '分类 / 跟进原因']
     if kind == 'issues':
         headers += ['历史最高记录得分率(%)', '历史异常原因', '出现次数', '涉及批次数', '最近批次号', '核对说明']
+    headers += ['开始时间', '结束时间', '答题时长']
     records = []
     for row in rows:
-        qualification = '非正式在册人员' if row['qualified'] is None else '已合格（≥90）' if row['qualified'] else '不合格（无有效数值或<90）'
+        qualification = '非正式在册人员' if row['qualified'] is None else '已合格（≥60）' if row['qualified'] else '不合格（无有效数值或<60）'
         record = [row['student_id'], row['name'], row['college_name'], row['class_name'], row['status'],
                   row['score_rate'], qualification, '；'.join(row['category_labels'])]
         if kind == 'issues':
             record += [row['historical_rate'], '；'.join(row['reasons']), row['occurrence_count'], row['batch_count'],
                        row['latest_batch_id'], '历史异常仅供核对，不代表尚未解决；不计入正式待跟进人数。']
+        record += [row.get('exam_started_at'), row.get('exam_finished_at'), format_duration(row.get('answer_duration_seconds')) or None]
         records.append(record)
     return headers, records
 
@@ -151,6 +158,6 @@ def install_follow_up_routes(app, db_path, csv_response, safe_csv):
             response = Response(content, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                                 headers={'Content-Disposition': f'attachment; filename="{filename}"'})
         response.headers['X-Export-Records'] = str(len(rows))
-        response.headers['X-Follow-Up-Api-Version'] = '1'
+        response.headers['X-Follow-Up-Api-Version'] = '4'
         response.headers['X-Data-Revision'] = str(rev)
         return response

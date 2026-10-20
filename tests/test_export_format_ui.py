@@ -32,7 +32,7 @@ def test_download_summary_style_descriptions_and_exact_selected_scope(browser,ui
     try:
         # Each width owns a separate class; class scope must not include the other width.
         ids = [f'FORMAT{width}-{index}' for index in range(5)]
-        rates = [90,0,20,None,100]
+        rates = [60,0,20,None,100]
         seed(page,ui_url,[row(sid,name=f'样式学生{index}',cls=f'样式{width}班',rate=rate,
                               status='进行中' if index==2 else '已完成')
                           for index,(sid,rate) in enumerate(zip(ids,rates,strict=True))])
@@ -71,7 +71,7 @@ def test_old_export_response_without_summary_cannot_silently_download(browser,ui
         page.route('**/api/students/export.xlsx',old_response)
         page.locator('.export-menu summary').click()
         page.locator('[data-action="score-export"]').click()
-        playwright.expect(page.locator('#toast')).to_contain_text('尚未加载统一≥90合格规则及新版导出说明表')
+        playwright.expect(page.locator('#toast')).to_contain_text('尚未加载统一≥60合格规则及新版导出说明表')
         playwright.expect(page.locator('#toast')).to_contain_text('Ctrl+C')
         assert not downloads
         playwright.expect(page.locator('.export-menu summary')).not_to_contain_text('导出中')

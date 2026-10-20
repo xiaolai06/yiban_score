@@ -21,7 +21,7 @@ def client(tmp_path):
     with connection(path) as con:
         con.execute("INSERT INTO colleges(id,name) VALUES(1,'测试学院甲'),(2,'测试学院乙')")
         con.execute("INSERT INTO classes(id,college_id,name) VALUES(1,1,'测试一班'),(2,1,'测试二班'),(3,2,'测试一班')")
-        cases = [('已完成', 0), ('已完成', 89.99), ('已完成', 90), ('已完成', 90.01),
+        cases = [('已完成', 0), ('已完成', 59.99), ('已完成', 90), ('已完成', 90.01),
                  ('已完成', 100), ('待录入', None), ('未开始', 0), ('进行中', 20)]
         for i, (status, rate) in enumerate(cases, 1):
             name = '=1+1' if i == 1 else f'测试学生{i}'
@@ -115,7 +115,7 @@ def test_qualified_statistics_use_inclusive_thresholds_and_scope(client):
     result = client.get('/api/students?class_id=1').json()
     assert result['qualified'] == 3 and result['below_90'] == 5 and result['at_90'] == 1
     assert result['settled'] == 5 and result['total'] == 8
-    assert result['average_rate'] == 74
+    assert result['average_rate'] == 68
     all_result = client.get('/api/students').json()
     assert all_result['qualified'] == 5 and all_result['below_90'] == 5
     missing = client.get('/api/students?score_filter=missing').json()
@@ -189,7 +189,7 @@ def test_below_90_filter_and_statistics_match_export(client):
     assert result['total'] == result['below_90'] == 5
     assert result['settled'] == 2
     assert result['qualified'] == result['at_90'] == 0
-    assert result['average_rate'] == pytest.approx(89.99 / 2, abs=.00501)
+    assert result['average_rate'] == pytest.approx(59.99 / 2, abs=.00501)
     exported = export(client, student_filter={'score_filter': 'below_90'})
     assert exported.headers['x-export-students'] == str(result['total'])
     full = client.get('/api/students?page_size=1').json()
@@ -209,7 +209,7 @@ def test_students_can_sort_college_and_class_names(client, sort):
 
 
 @pytest.mark.parametrize('status', ['待录入', '未开始', '进行中', '已完成', '已录入', '缺考', '免考'])
-@pytest.mark.parametrize('rate', [None, 0, 89.99, 90, 90.01, 100])
+@pytest.mark.parametrize('rate', [None, 0, 59.99, 60, 60.01, 89.99, 90, 90.01, 100])
 def test_unqualified_rule_is_shared_by_export_filter_and_count(client, status, rate):
     student_id = '0099'
     with connection(client.app.state.db_path) as con:
@@ -217,7 +217,7 @@ def test_unqualified_rule_is_shared_by_export_filter_and_count(client, status, r
                     (student_id, '状态分数边界测试', 3, status, rate))
         con.commit()
     before = client.get(f'/api/students/{student_id}').json()
-    expected = rate is None or rate < 90
+    expected = rate is None or rate < 60
     result = client.get('/api/students?q=0099&score_filter=below_90').json()
     assert result['total'] == result['below_90'] == int(expected)
     assert result['qualified'] == result['at_90'] == 0
@@ -228,6 +228,12 @@ def test_unqualified_rule_is_shared_by_export_filter_and_count(client, status, r
     is_valid = rate is not None and status not in ['未开始', '进行中']
     assert full['settled'] == int(is_valid)
     assert full['average_rate'] == (rate if is_valid else None)
+    overview = client.get('/api/stats').json()
+    assert overview['pass_score'] == 60
+    assert overview['completed'] == 7 + int(is_valid)
+    college = next(co for co in overview['colleges_detail'] if co['id'] == 2)
+    assert college['completed'] == 1 + int(is_valid)
+    assert college['qualified'] == 1 + int(not expected)
     exported = export(client, student_ids=[student_id], below_90=True)
     assert exported.status_code == (200 if expected else 400)
     if expected:

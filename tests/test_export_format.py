@@ -36,13 +36,13 @@ def test_total_summary_includes_90_and_positive_unfinished_score(client):
     before = client.get('/api/students').json()
     r = export(client, all_students=True)
     assert r.status_code == 200
-    assert r.headers['X-Export-Workbook-Version'] == '3'
-    assert client.get('/api/health').json()['score_export_workbook_version'] == 3
+    assert r.headers['X-Export-Workbook-Version'] == '6'
+    assert client.get('/api/health').json()['score_export_workbook_version'] == 6
     book, counts = summary(r.content)
     assert len(book) == 4
     assert counts == pytest.approx([10, 7, 3, .7, 5, 5/7, .5])
     assert sum(sheet.rows-1 for sheet in book[:-1]) == counts[0]
-    # Site qualification and export both use >=90, independent of progress.
+    # Site qualification and export both use >=60, independent of progress.
     assert before['qualified'] == 5
     assert client.get('/api/students').json() == before
     assert book[-1].cell(2, 3).value == 8
@@ -97,13 +97,13 @@ def test_no_participants_show_undefined_pass_rate_not_false_zero(client, rate):
 
 
 @pytest.mark.parametrize('status',['待录入','未开始','进行中','已完成','已录入','缺考','免考'])
-@pytest.mark.parametrize('rate',[None, 0, .01, 89.99, 90, 90.01, 100])
+@pytest.mark.parametrize('rate',[None, 0, .01, 59.99, 60, 60.01, 89.99, 90, 90.01, 100])
 def test_export_summary_uses_numeric_rule_independent_of_status(status, rate):
     student = {'class_id':1, 'student_id':'000001', 'name':'合成姓名', 'college_name':'合成学院',
                'class_name':'2026级1班', 'status':status, 'score_rate':rate}
     book, values = summary(build_score_workbook([student]))
     participating = int(rate is not None and rate > 0)
-    qualified = int(rate is not None and rate >= 90)
+    qualified = int(rate is not None and rate >= 60)
     assert values == [1, participating, 1-participating, participating, qualified,
                       qualified if participating else '—', qualified]
     assert book[0].cell(1, 0).text() == '000001'

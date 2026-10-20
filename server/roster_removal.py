@@ -13,6 +13,7 @@ from fastapi import HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .database import STUDENT_SELECT, bump_revision, connection, read_snapshot, revision
+from .exam_time import TIME_FIELDS, format_duration
 from .roster import LOOKUP, header_key, identifier
 
 
@@ -68,13 +69,15 @@ def install_removal_routes(app, db_path, stage, read_upload, read_stage, stage_p
     def csv_rows(rows, errors, filename):
         out = io.StringIO(newline='')
         writer = csv.writer(out)
-        writer.writerow(['原表行号', 'A列学号', '数据库姓名', '数据库学院', '数据库班级', '当前状态', '当前得分率', '处理结果'])
+        writer.writerow(['原表行号', 'A列学号', '数据库姓名', '数据库学院', '数据库班级', '当前状态', '当前得分率', '处理结果',
+                         '开始时间', '结束时间', '答题时长'])
         for row in rows:
             writer.writerow([safe_csv(v) for v in (row['row_number'], row['student_id'], row.get('name', ''),
                 row.get('college_name', ''), row.get('class_name', ''), row.get('status', ''),
-                row.get('score_rate'), '将删除' if row['matched'] else '不在当前名单，仅登记剔除学号')])
+                row.get('score_rate'), '将删除' if row['matched'] else '不在当前名单，仅登记剔除学号',
+                row.get('exam_started_at'), row.get('exam_finished_at'), format_duration(row.get('answer_duration_seconds')))])
         for error in errors:
-            writer.writerow([safe_csv(v) for v in (error['row_number'], error['student_id'], '', '', '', '', '', error['message'])])
+            writer.writerow([safe_csv(v) for v in (error['row_number'], error['student_id'], '', '', '', '', '', error['message'], '', '', '')])
         return csv_response(out.getvalue(), filename)
 
     @app.post('/api/removals/preview')
@@ -96,7 +99,7 @@ def install_removal_routes(app, db_path, stage, read_upload, read_stage, stage_p
             score_rows = con.execute('SELECT COUNT(*) FROM score_import_rows WHERE student_id IN (SELECT student_id FROM removal_ids)').fetchone()[0]
             changes = con.execute('SELECT COUNT(*) FROM student_changes WHERE student_id IN (SELECT student_id FROM removal_ids)').fetchone()[0]
             rows = [dict(r, matched=r['student_id'] in existing, **{k: existing.get(r['student_id'], {}).get(k)
-                    for k in ('name', 'college_name', 'class_name', 'status', 'score_rate', 'version', 'class_id', 'college_id')}) for r in validated['rows']]
+                    for k in ('name', 'college_name', 'class_name', 'status', 'score_rate', 'version', 'class_id', 'college_id', *TIME_FIELDS)}) for r in validated['rows']]
             matched = sum(1 for r in rows if r['matched'])
             summary = {k: v for k, v in validated.items() if k not in {'rows', 'errors'}}
             summary.update(unique_ids=len(rows), matched=matched, unmatched=len(rows)-matched,
@@ -148,7 +151,7 @@ def install_removal_routes(app, db_path, stage, read_upload, read_stage, stage_p
                     actual = current.get(reviewed['student_id'])
                     if reviewed['matched'] != (actual is not None) or actual is not None and any(
                         key in reviewed and reviewed[key] != actual[key]
-                        for key in ('name','college_name','class_name','status','score_rate','version','class_id','college_id')):
+                        for key in ('name','college_name','class_name','status','score_rate','version','class_id','college_id',*TIME_FIELDS)):
                         raise HTTPException(409, '剔除对象已发生变化，请重新生成预览；未删除任何人员。')
                 score_count = con.execute('SELECT COUNT(*) FROM score_import_rows WHERE student_id IN (SELECT student_id FROM removal_ids)').fetchone()[0]
                 change_count = con.execute('SELECT COUNT(*) FROM student_changes WHERE student_id IN (SELECT student_id FROM removal_ids)').fetchone()[0]

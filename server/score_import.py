@@ -14,13 +14,15 @@ import unicodedata
 from collections import Counter, defaultdict
 from decimal import Decimal, InvalidOperation
 
+from .exam_time import TIME_FIELDS, clean_exam_time, elapsed_seconds
 from .excel_reader import MAX_COLS, MAX_ROWS, Cell, Sheet, WorkbookError, read_workbook
 from .grade_rules import round_score
 from .roster import STATUSES, header_key
 
 FIELDS = {'student_id':'学号', 'name':'姓名（仅核对）', 'status':'考试 / 登记状态',
           'score_rate':'得分率', 'result_text':'成绩 / 百分比（备用）',
-          'college':'学院（仅核对）', 'class_name':'班级（仅核对）'}
+          'college':'学院（仅核对）', 'class_name':'班级（仅核对）',
+          'exam_started_at':'开始时间（L列）', 'exam_finished_at':'结束时间（M列）'}
 ALIASES = {
     'student_id':['学号','学生学号','学生编号','studentid','studentno','studentnumber'],
     'name':['姓名','学生姓名','name','studentname'],
@@ -29,6 +31,8 @@ ALIASES = {
     'result_text':['成绩 / 百分比','成绩/百分比','成绩百分比','成绩与百分比'],
     'college':['学院','院系','所属学院','学院名称','院系名称'],
     'class_name':['班级','行政班','班级名称','所属班级'],
+    'exam_started_at':['开始时间','答题开始时间','考试开始时间','开始答题时间','starttime','startedat','exam_started_at'],
+    'exam_finished_at':['结束时间','答题结束时间','考试结束时间','交卷时间','提交时间','endtime','finishedat','exam_finished_at'],
 }
 LOOKUP = {header_key(v): k for k, names in ALIASES.items() for v in names}
 UNFINISHED = {'未开始', '进行中'}
@@ -233,6 +237,12 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
         raise WorkbookError('字段映射存在不支持的字段或重复列。')
     if any(type(v) is not int or not 0<=v<sh.cols for v in mapping.values()):
         raise WorkbookError('字段映射列号无效。')
+    # Only omitted trailing time cells are unambiguously optional. Missing
+    # score/identity or middle columns still signal a potentially shifted CSV.
+    time_fields = set(TIME_FIELDS[:2])
+    optional_time_columns = ({column for field, column in mapping.items() if field in time_fields}
+        | {column for column, label in enumerate(sh.texts(header_row-1)) if LOOKUP.get(header_key(label)) in time_fields})
+    optional_time_columns -= {column for field, column in mapping.items() if field not in time_fields}
     rows=[]
     blank=0
     repeated=0
@@ -248,11 +258,18 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
         r={'row_number':ri+1,'raw_id':raw.get('student_id',''),'source_name':raw.get('name',''),
            'source_college':raw.get('college',''),'source_class_name':raw.get('class_name',''),
            'raw_status':raw.get('status',''),'raw_rate':raw.get('score_rate',''),
-           'raw_result':raw.get('result_text',''), 'student_id':'','name':'',
+           'raw_result':raw.get('result_text',''),
+           'raw_started_at':raw.get('exam_started_at',''), 'raw_finished_at':raw.get('exam_finished_at',''),
+           'exam_started_at':None, 'exam_finished_at':None, 'answer_duration_seconds':None,
+           'student_id':'','name':'',
            'college':'','class_name':'','status':None,'score_rate':None,
            'action':'update','notes':[],'errors':[],'matched':False,'before':None,'after':None}
         if sh.column_counts and sh.column_counts.get(ri)!=sh.column_counts.get(header_row-1):
-            r['errors'].append('CSV 列数与表头不一致，可能发生错位；请核对分隔符和引号。')
+            width, expected = sh.column_counts.get(ri, 0), sh.column_counts.get(header_row-1, sh.cols)
+            if width < expected and all(column in optional_time_columns for column in range(width, expected)):
+                r['notes'].append('末尾可选时间列未填写，按空值处理；不影响成绩导入')
+            else:
+                r['errors'].append('CSV 列数与表头不一致，可能发生错位；请核对分隔符和引号。')
         try:
             r['student_id'],notes=clean_identifier(cells['student_id'])
             r['notes']+=notes
@@ -280,10 +297,24 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
             r['score_rate']=rate
         except ValueError as e:
             r['errors'].append(str(e))
+        for field in ('exam_started_at', 'exam_finished_at'):
+            if field in cells:
+                try:
+                    r[field] = clean_exam_time(cells[field], date_1904=sh.date_1904)
+                    if tidy(raw[field]) == '未正常交卷':
+                        r['notes'].append(FIELDS[field]+'标记为未正常交卷，保留原标记，答题时长留空')
+                except ValueError as e:
+                    r['errors'].append(FIELDS[field]+'：'+str(e))
+        try:
+            r['answer_duration_seconds'] = elapsed_seconds(r['exam_started_at'], r['exam_finished_at'])
+        except ValueError as e:
+            r['errors'].append(str(e))
+        if r['answer_duration_seconds'] is None and (r['exam_started_at'] or r['exam_finished_at']):
+            r['notes'].append('开始或结束时间不完整，答题时长留空；不以当前时间或系统评定时间代替')
         old=existing.get(r['student_id'])
         if old:
             r.update(matched=True,name=old['name'],college=old['college_name'],class_name=old['class_name'])
-            r['before']={k:old.get(k) for k in ('status','score_rate','version','score_batch_id','score_imported_at')}
+            r['before']={k:old.get(k) for k in ('status','score_rate','version','score_batch_id','score_imported_at',*TIME_FIELDS)}
             if not tidy(raw.get('name','')):
                 r['notes'].append('原表姓名为空；按学号使用学生库姓名')
             elif tidy(raw['name'])!=tidy(old['name']):
@@ -292,7 +323,7 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
             for key, oldkey in [('college','college_name'),('class_name','class_name')]:
                 if tidy(raw.get(key,'')) and tidy(raw[key])!=tidy(old[oldkey]):
                     r['notes'].append(FIELDS[key]+'与名单不同；保留名单归属')
-            r['after']={'status':r['status'],'score_rate':r['score_rate']}
+            r['after']={'status':r['status'],'score_rate':r['score_rate'], **{key:r[key] for key in TIME_FIELDS}}
             if r['action']!='name_conflict':
                 if r['errors']:
                     r['action']='invalid'
@@ -307,8 +338,23 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
                 elif update_mode=='fill_missing' and (old['score_rate'] is not None or old['status'] in FINAL):
                     r['action']='protected'
                     r['notes'].append('只补缺失模式：保留已有成绩')
+            if (r['action'] == 'unchanged' and r['status'] == old['status']
+                and r['score_rate'] == old['score_rate'] and r['answer_duration_seconds'] is not None):
+                if old.get('answer_duration_seconds') is None or (
+                    update_mode == 'replace' and any(old.get(key) != r[key] for key in TIME_FIELDS)
+                ):
+                    r['action'] = 'update'
+                    r['notes'].append('同分同状态，补齐 / 更新本条成绩的答题时间')
+                elif any(old.get(key) != r[key] for key in TIME_FIELDS):
+                    r['notes'].append('同分已有答题时间，保留原记录；不同时间原值保存在本批明细')
             if r['action'] in {'protected', 'unchanged'}:
-                r['after'] = {'status': old['status'], 'score_rate': old['score_rate']}
+                r['after'] = {'status': old['status'], 'score_rate': old['score_rate'],
+                              **{key:old.get(key) for key in TIME_FIELDS}}
+            elif (r['action'] == 'update' and r['score_rate'] == old['score_rate']
+                  and r['answer_duration_seconds'] is None
+                  and (old.get('answer_duration_seconds') is not None or not (r['exam_started_at'] or r['exam_finished_at']))):
+                # Advancing status/no-time files cannot erase a valid duration for the same score.
+                r['after'].update({key:old.get(key) for key in TIME_FIELDS})
         else:
             r['name']=tidy(raw.get('name',''))
             r['action']='invalid' if r['errors'] else 'unmatched'
@@ -324,8 +370,9 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
     for group in groups.values():
         if len(group)<2:
             continue
-        same=all((r['status'],r['score_rate'],tidy(r['source_name']),r['action'])==
-                 (group[0]['status'],group[0]['score_rate'],tidy(group[0]['source_name']),group[0]['action']) for r in group)
+        same=all((r['status'],r['score_rate'],tidy(r['source_name']),r['action'],*[r[key] for key in TIME_FIELDS])==
+                 (group[0]['status'],group[0]['score_rate'],tidy(group[0]['source_name']),group[0]['action'],
+                  *[group[0][key] for key in TIME_FIELDS]) for r in group)
         safe=all(r['action'] in {'update','unchanged','protected'} for r in group)
         winner = None
         if safe and same:
@@ -341,8 +388,11 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
                 return (rate is not None, rate if rate is not None else 0, status_priority(r['status']))
             winner = max(candidates, key=priority)
             tied = [r for r in candidates if priority(r) == priority(winner)]
-            if len({r['status'] for r in tied}) > 1:
-                winner = None  # e.g. absent versus exempt; never guess the status.
+            timed = [r for r in tied if r['answer_duration_seconds'] is not None]
+            if len({r['status'] for r in tied}) > 1 or len({(r['exam_started_at'], r['exam_finished_at']) for r in timed}) > 1:
+                winner = None  # Neither status nor different same-score attempts can be guessed.
+            elif timed:
+                winner = timed[0]
         if winner is not None:
             winner['notes'].append(f'同学号重复记录合并，保留第 {winner["row_number"]} 行的较高有效得分率')
             for r in group:
@@ -363,7 +413,8 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
                    improved_scores=sum(r['before']['score_rate'] is not None and r['score_rate'] is not None
                                        and r['score_rate'] > r['before']['score_rate'] for r in updates),
                    status_updates=sum(r['before']['score_rate'] is not None and r['score_rate'] == r['before']['score_rate']
-                                      for r in updates),
+                                      and r['status'] != r['before']['status'] for r in updates),
+                   time_updates=sum(any(r['before'].get(key) != r['after'].get(key) for key in TIME_FIELDS) for r in updates),
                    source_rows=len(rows),matched_rows=sum(r['matched'] for r in rows),
                    matched_students=len({r['student_id'] for r in rows if r['matched']}),
                    issue_rows=issues,cleaned_rows=sum(bool(r['notes']) for r in rows),
@@ -374,4 +425,5 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
     return {'rows':rows,'summary':summary,'action_labels':ACTIONS,
             'warnings':['只按学号匹配，成绩导入不新增学生、不改变学院和班级。',
                         '当前维护每名学生的一组状态与得分率；批次是导入审计，不是独立的多科考试账册。',
-                        '默认增量合并：未录入的成绩补入，已有成绩保留较高得分率；原始行和处理结果长期保留。']}
+                        '默认增量合并：未录入的成绩补入，已有成绩保留较高得分率；原始行和处理结果长期保留。',
+                        '答题时长＝结束时间－开始时间（原报表M列－L列）；不使用系统评定时间，缺失留空。低分保护时同时保留高分的时间。']}
