@@ -15,6 +15,8 @@ from fastapi import HTTPException, Query, Response
 
 from .database import connection
 from .exam_time import TIME_FIELDS, format_duration
+from .score_import import search_needles
+from .score_records import identity_fields, recorded_text
 from .table_export import build_table_workbook
 
 ISSUE_LABELS = {'unmatched': '名单外学号', 'invalid': '数据错误',
@@ -45,6 +47,7 @@ def group_issues(events: list[dict]) -> list[dict]:
         if key not in groups:
             groups[key] = {
                 'key': key, 'student_id': event['student_id'], 'raw_ids': [], 'names': [],
+                'yiban_ids': [], 'raw_yiban_ids': [],
                 'colleges': [], 'classes': [], 'kinds': [], 'reasons': [],
                 'best_score_rate': None, 'best_status': '', 'best_batch_id': None,
                 'best_batch_name': '', 'best_row_number': None, 'best_exam_started_at': None,
@@ -54,7 +57,8 @@ def group_issues(events: list[dict]) -> list[dict]:
                 '_batches': set(), '_events': [], '_last_id': event['id'],
             }
         group = groups[key]
-        for field, sources in [('raw_ids', ['raw_id']), ('names', ['source_name', 'name']),
+        for field, sources in [('raw_ids', ['raw_id']), ('yiban_ids', ['yiban_id']),
+                               ('raw_yiban_ids', ['raw_yiban_id']), ('names', ['source_name', 'name']),
                                ('colleges', ['source_college', 'college']), ('classes', ['source_class_name', 'class_name'])]:
             for source in sources:
                 add_unique(group[field], event[source])
@@ -78,14 +82,16 @@ def group_issues(events: list[dict]) -> list[dict]:
 
 
 def filtered_groups(groups, q: str, kind: str):
-    needle = q.strip().casefold()
+    needles = search_needles(q)
     result = []
     for group in groups:
         if kind != 'all' and kind not in group['kinds']:
             continue
         texts = [group['student_id'], *group['raw_ids'], *group['names'], *group['colleges'],
-                 *group['classes'], *group['reasons']]
-        if needle and not any(needle in text.casefold() for text in texts):
+                 *group['classes'], *group['reasons'], *group['yiban_ids'], *group['raw_yiban_ids'],
+                 *(event['batch_name'] for event in group['_events']),
+                 *(event['filename'] for event in group['_events'])]
+        if needles and not any(needle in text.casefold() for needle in needles for text in texts):
             continue
         result.append(group)
     return result
@@ -96,32 +102,36 @@ def export_table(groups, scope):
         headers = ['学号', '姓名记录', '学院记录', '班级记录', '最高记录得分率(%)', '最高分批次号',
                    '最高分批次名称', '最高分原表行号', '出现次数', '涉及批次数', '异常类型', '异常原因', '首次出现', '最近出现',
                    '原学号记录', '最近批次号', '最近批次名称', '汇总标识',
-                   '最高分记录开始时间', '最高分记录结束时间', '最高分记录答题时长']
+                   '最高分记录开始时间', '最高分记录结束时间', '最高分记录答题时长', '易班ID记录（清洗后）', '原易班ID记录']
         rows = [[g['student_id'] or '学号无效 / 未填写', ' / '.join(g['names']), ' / '.join(g['colleges']),
                  ' / '.join(g['classes']), g['best_score_rate'], g['best_batch_id'], g['best_batch_name'],
                  g['best_row_number'], g['occurrence_count'], g['batch_count'],
                  ' / '.join(ISSUE_LABELS[kind] for kind in g['kinds']), '；'.join(g['reasons']),
                  g['first_seen'], g['last_seen'], ' / '.join(g['raw_ids']), g['latest_batch_id'],
                  g['latest_batch_name'], g['key'], g['best_exam_started_at'], g['best_exam_finished_at'],
-                 format_duration(g['best_answer_duration_seconds']) or None] for g in groups]
+                 format_duration(g['best_answer_duration_seconds']) or None,
+                 ' / '.join(g['yiban_ids']), ' / '.join(g['raw_yiban_ids'])] for g in groups]
         return headers, rows
     headers = ['学号', '原学号', '原姓名', '名单姓名', '原学院', '原班级', '批次号', '批次名称', '导入时间',
                '批次状态', '原表行号', '原状态', '原得分率', '原成绩/百分比', '可识别得分率(%)', '异常类型', '异常原因',
-               '原开始时间', '原结束时间', '开始时间', '结束时间', '答题时长']
+               '原开始时间', '原结束时间', '开始时间', '结束时间', '答题时长',
+               '原易班ID', '清洗后易班ID', '清洗后状态', '清洗说明', '源工作表', '原始整行快照']
     events = sorted((event for group in groups for event in group['_events']), key=lambda event: event['id'], reverse=True)
     return headers, [[e['student_id'], e['raw_id'], e['source_name'], e['name'], e['source_college'], e['source_class_name'],
                       e['batch_id'], e['batch_name'], e['created_at'], '已撤销' if e['batch_state'] == 'reverted' else '已保存',
                       e['row_number'], e['raw_status'], e['raw_rate'], e['raw_result'], e['score_rate'],
                       ISSUE_LABELS[e['action']], '；'.join(e['errors']), e['raw_started_at'], e['raw_finished_at'],
                       e.get('exam_started_at'), e.get('exam_finished_at'),
-                      format_duration(e.get('answer_duration_seconds')) or None] for e in events]
+                      format_duration(e.get('answer_duration_seconds')) or None,
+                      e['raw_yiban_id'], e['yiban_id'], e['status'], '；'.join(e['notes']),
+                      e['sheet_name'], '已保存' if e['source_row_available'] else '旧记录未保存全部列'] for e in events]
 
 
 def issue_snapshot(con, saved_record, *, college_id=None, class_id=None, exclude_removed=False):
     """Share the projection within a caller's read transaction; never write audit."""
     events = []
     rows = con.execute('''SELECT r.id,r.batch_id,r.row_number,r.student_id,r.action,r.record_json,
-        b.name AS batch_name,b.filename,b.created_at,b.state AS batch_state
+        b.name AS batch_name,b.filename,b.sheet_name,b.created_at,b.state AS batch_state
         FROM score_import_rows r JOIN score_batches b ON b.id=r.batch_id
         LEFT JOIN students s ON s.student_id=r.student_id
         LEFT JOIN classes c ON c.id=s.class_id
@@ -139,9 +149,13 @@ def issue_snapshot(con, saved_record, *, college_id=None, class_id=None, exclude
         event['key'] = f'student:{sid}' if valid_id else f'row:{row["batch_id"]}:{row["row_number"]}'
         for field in ('raw_id', 'source_name', 'name', 'source_college', 'college', 'source_class_name',
                       'class_name', 'raw_status', 'raw_rate', 'raw_result', 'status'):
-            event[field] = str(record.get(field) or '')
+            event[field] = recorded_text(record.get(field))
+        event.update(identity_fields(record))
+        event['source_row_available'] = isinstance(record.get('source_row'), dict)
+        event['notes'] = record.get('notes') or []
         errors = record.get('errors') or []
-        if not isinstance(errors, list) or any(not isinstance(error, str) for error in errors):
+        if any(not isinstance(values, list) or any(not isinstance(value, str) for value in values)
+               for values in (errors, event['notes'])):
             raise HTTPException(503, '已保存的异常明细格式异常，请检查数据库备份。')
         event['raw_started_at'] = str(record.get('raw_started_at') or '')
         event['raw_finished_at'] = str(record.get('raw_finished_at') or '')

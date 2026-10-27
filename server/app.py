@@ -252,7 +252,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
         with connection(db_path) as con:
             return {'ok': True, 'storage': 'SQLite', 'database_file': db_path.name,
                     'local_only': public_host is None, 'schema_version': 2, 'directory_api_version': 6, 'revision': revision(con),
-                    'statuses': STATUSES, 'max_upload_mb': 20, 'preview_ttl_minutes': 60, 'roster_removal_api_version': 1, 'score_export_workbook_version': 6, 'follow_up_api_version': 4, 'exam_time_api_version': 1, 'pass_score': PASS_SCORE, 'read_snapshot_api_version': 1}
+                    'statuses': STATUSES, 'max_upload_mb': 20, 'preview_ttl_minutes': 60, 'roster_removal_api_version': 1, 'score_export_workbook_version': 6, 'follow_up_api_version': 4, 'exam_time_api_version': 1, 'score_trace_api_version': 1, 'score_people_api_version': 1, 'pass_score': PASS_SCORE, 'read_snapshot_api_version': 1}
 
     @app.get('/api/stats')
     def stats():

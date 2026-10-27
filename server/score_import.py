@@ -1,8 +1,9 @@
 """Bounded score-file readers and deterministic, auditable cleaning.
 
 No fuzzy identity matching, execution of spreadsheet formulas, or guessed scales.
-Only selected score-related fields are returned; unrelated account columns are not
-persisted in the audit database. All row numbers are 1-based logical record rows.
+New imports retain inert source-row snapshots in the local audit database.
+Account columns never enter the student table or identity matching. All row numbers
+are 1-based logical record rows.
 """
 from __future__ import annotations
 
@@ -12,20 +13,24 @@ import math
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from contextlib import suppress
 from decimal import Decimal, InvalidOperation
 
 from .exam_time import TIME_FIELDS, clean_exam_time, elapsed_seconds
 from .excel_reader import MAX_COLS, MAX_ROWS, Cell, Sheet, WorkbookError, read_workbook
 from .grade_rules import round_score
 from .roster import STATUSES, header_key
+from .score_records import snapshot_row
 
 FIELDS = {'student_id':'学号', 'name':'姓名（仅核对）', 'status':'考试 / 登记状态',
           'score_rate':'得分率', 'result_text':'成绩 / 百分比（备用）',
           'college':'学院（仅核对）', 'class_name':'班级（仅核对）',
-          'exam_started_at':'开始时间（L列）', 'exam_finished_at':'结束时间（M列）'}
+          'exam_started_at':'开始时间（L列）', 'exam_finished_at':'结束时间（M列）',
+          'yiban_id':'易班 ID（选填，仅检索）'}
 ALIASES = {
     'student_id':['学号','学生学号','学生编号','studentid','studentno','studentnumber'],
     'name':['姓名','学生姓名','name','studentname'],
+    'yiban_id':['易班ID','易班 ID','易班用户ID','易班编号','yibanid','yiban_id','易班账号ID'],
     'status':['状态','考试状态','完成状态','登记状态','成绩状态','status'],
     'score_rate':['得分率','得分率(%)','得分率（%）','得分率%','scorerate','百分比'],
     'result_text':['成绩 / 百分比','成绩/百分比','成绩百分比','成绩与百分比'],
@@ -158,6 +163,24 @@ def clean_identifier(cell: Cell) -> tuple[str, list[str]]:
     return text, notes
 
 
+def clean_yiban_id(cell: Cell) -> str:
+    """Digits only, never reconstruct rounded/scientific identifiers or match people."""
+    try:
+        value, _ = clean_identifier(cell)
+    except ValueError as exc:
+        raise ValueError('易班 ID 无法可靠清洗为数字；原值保留，不参与身份匹配。') from exc
+    if not value.isascii() or not value.isdigit():
+        raise ValueError('易班 ID 应为完整数字；原值保留，不猜测或删除任意字符。')
+    return value
+
+
+def search_needles(query: str) -> list[str]:
+    terms = [query.strip().casefold(), tidy(query).casefold()]
+    with suppress(ValueError):
+        terms.append(clean_identifier(Cell(query))[0].casefold())
+    return list(dict.fromkeys(term for term in terms if term))
+
+
 def clean_status(raw: str) -> str:
     text=tidy(raw)
     value=STATUS_MAP.get(text) or STATUS_MAP.get(re.sub(r'[\s_-]','',text).lower())
@@ -259,6 +282,8 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
            'source_college':raw.get('college',''),'source_class_name':raw.get('class_name',''),
            'raw_status':raw.get('status',''),'raw_rate':raw.get('score_rate',''),
            'raw_result':raw.get('result_text',''),
+           'raw_yiban_id':raw.get('yiban_id',''), 'yiban_id':'',
+           'source_row':snapshot_row(sh, header_row, ri),
            'raw_started_at':raw.get('exam_started_at',''), 'raw_finished_at':raw.get('exam_finished_at',''),
            'exam_started_at':None, 'exam_finished_at':None, 'answer_duration_seconds':None,
            'student_id':'','name':'',
@@ -275,6 +300,13 @@ def build_preview(sh: Sheet, header_row: int, mapping: dict, existing: dict, *,
             r['notes']+=notes
         except ValueError as e:
             r['errors'].append(str(e))
+        if 'yiban_id' in cells and (raw['yiban_id'] or cells['yiban_id'].formula or cells['yiban_id'].error):
+            try:
+                r['yiban_id'] = clean_yiban_id(cells['yiban_id'])
+                if r['yiban_id'] != raw['yiban_id']:
+                    r['notes'].append('易班 ID 已清除明确格式前缀、全角或 .0 尾缀，仅用于检索')
+            except ValueError as exc:
+                r['notes'].append(str(exc))  # Optional locator must not change score eligibility.
         try:
             r['status']=clean_status(raw.get('status',''))
             if r['status']!=raw.get('status',''):

@@ -1,0 +1,49 @@
+/* Source traces and current-status lookup share the original campus workspace. */
+.page-heading:has([data-action="score-people-open"]){flex-wrap:wrap}
+.issue-source-panel{margin:18px 24px;border:1px solid #ccd9ec;border-radius:12px;background:#fff;white-space:normal;color:#263e5e;min-width:0;overflow-wrap:anywhere}
+.source-panel-header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px}
+.source-panel-header h4{margin:0;font-size:16px}
+.audit-source-toggle,.issue-source-toggle{margin-top:12px;white-space:normal}
+.issue-dialog .issue-table td{vertical-align:top}
+.score-row-trace{padding:14px;border-top:1px solid #dce5f2;font-size:14px;color:#29405c;line-height:1.8;white-space:normal;overflow-wrap:anywhere}
+.score-row-trace h4{margin:16px 0 10px;font-size:16px;color:#203b60}
+.score-row-trace .trace-location{font-size:14px;line-height:1.9;color:#223b60}
+.score-row-trace .trace-note,.issue-source-panel>.trace-note{font-size:13px;color:#405776;line-height:1.9;margin:10px 0}
+.trace-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:14px 0}
+.trace-field{min-width:0;padding:11px 12px;border:1px solid #dfe6f1;border-radius:9px;background:#f7faff}
+.trace-field>span{display:block;font-size:12px;font-weight:600;color:#465e7f;margin-bottom:4px}
+.trace-field>strong{display:block;font-weight:600;font-size:14px;color:#203954;white-space:pre-wrap}
+.score-row-trace .trace-field p{font-size:13px;line-height:1.8;margin-top:6px}
+.source-columns{width:100%;font-size:13px;white-space:normal;border:1px solid #dde5f1;border-radius:8px;overflow:hidden}
+.source-column{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.8fr) minmax(0,1.2fr);border-top:1px solid #e0e7f1}
+.source-column>span{min-width:0;padding:10px;overflow-wrap:anywhere;white-space:normal}
+.source-column-heading{border-top:0;background:#eff4fb;font-weight:650}
+.source-column>.source-cell-value{white-space:pre-wrap;font-family:Consolas,"Microsoft YaHei",monospace}
+.lookup-table{min-width:1200px}
+.lookup-table th,.lookup-table td{font-size:14px;line-height:1.8;padding:16px;vertical-align:top;white-space:normal;overflow-wrap:anywhere;min-width:130px;max-width:260px;color:#2a4160}
+.lookup-table td:nth-child(4),.lookup-table td:nth-child(5){min-width:220px}
+.lookup-name{display:block;font-size:18px;color:#203857}
+.lookup-table p{font-size:13px;margin-top:8px;line-height:1.9;color:#405777}
+.lookup-dialog .issue-summary>span{font-size:13px}
+.score-status-guide{margin:18px 24px;border:1px solid #d4dfef;border-radius:12px;background:#fff;font-size:14px;color:#294260}
+.score-status-guide>summary{padding:14px 16px;font-weight:650;cursor:pointer}
+.status-guide-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;padding:0 16px 16px}
+.status-guide-grid article{padding:13px;border:1px solid #dfe6f1;border-radius:10px;background:#f8faff;min-width:0}
+.status-guide-grid p{font-size:14px;line-height:1.9;margin-top:8px;overflow-wrap:anywhere}
+.status-guide-note{border-top:1px solid #dfe6f1;padding:14px 16px;color:#36516f;line-height:1.9;overflow-wrap:anywhere}
+.status-guide-note p+p{margin-top:9px}
+.issue-table td:last-child>.btn{display:flex;margin:5px 0}
+@media(max-width:600px){
+  .trace-fields,.status-guide-grid{grid-template-columns:minmax(0,1fr)}
+  .score-row-trace{padding:12px}
+  .score-status-guide,.issue-source-panel{margin:14px 18px}
+  .lookup-dialog .dialog-footer>.small-muted{font-size:12px}
+  .lookup-table{min-width:0;white-space:normal}
+  .lookup-table thead{display:none}
+  .lookup-table tbody,.lookup-table tr{display:block}
+  .lookup-table tr{margin:14px 18px;border:1px solid #d7e1ef;border-radius:12px;overflow:hidden}
+  .lookup-table td,.lookup-table td:nth-child(4),.lookup-table td:nth-child(5){display:block;min-width:0;max-width:none;padding:12px 14px}
+  .lookup-table td::before{content:attr(data-label);display:block;font-size:12px;font-weight:650;color:#435f80;margin-bottom:6px}
+  .lookup-table td:last-child{border-bottom:0}
+  .lookup-table .lookup-name{font-size:19px}
+}

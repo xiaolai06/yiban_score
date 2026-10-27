@@ -42,7 +42,7 @@ students 保留所有 V1 列；新增：
 - `result_rate(cell)`：只抽取明确的百分数，不推算满分。
 - `build_preview(sheet, header_row, mapping, existing, ...)`：不写数据库；逐行分类，重复检测，返回 summary/rows/warnings。
 
-默认列映射字段：`student_id, name, status, score_rate, result_text, college, class_name, exam_started_at, exam_finished_at`，索引从 0 开始。学号、状态必需，得分率/成绩百分比至少选一个；开始/结束时间始终选填、不提供也能导入；姓名/学院/班级仅核对。单个源列不能映射为互相冲突的多个用途。
+默认列映射字段：`student_id, name, status, score_rate, result_text, college, class_name, exam_started_at, exam_finished_at, yiban_id`，索引从 0 开始。学号、状态必需，得分率/成绩百分比至少选一个；开始/结束时间始终选填、不提供也能导入；姓名/学院/班级仅核对。单个源列不能映射为互相冲突的多个用途。
 
 限制：上传 20 MB；最多 60,000 行、160 列与 1,500,000 单元格。CSV 逐条记录解析，字段内换行支持；`row_number` 是 1 起始的逻辑记录号（含表头/空记录等），不保证等于文本编辑器的物理换行行号。CSV行与表头列数不同通常列为异常；仅省略末尾可识别且未被映射为身份/分数字段的可选时间单元格时，按缺失处理，不影响成绩导入。中间错位、遗漏成绩/学号或多余列仍拒绝。
 
@@ -95,6 +95,8 @@ with httpx.Client(base_url='http://127.0.0.1:8000',
 | POST `/api/scores/commit` | 确认；带 preview_id、skip_issues；仅异常批次还需 save_issues_only=true（两个确认开关均默认 false） |
 | GET `/api/scores/batches?page=1&page_size=10` | 全部持久历史；每页最多 50，无总量截断 |
 | GET `/api/scores/batches/{id}/rows?kind=all&page=1&page_size=20` | 已提交批次的逐行快照 |
+| GET `/api/scores/batches/{id}/rows/{row_number}` | 精确读取指定批次的原表逻辑行，返回 batch/row，旧记录不补造 source_row；已剔除或不存在返回404 |
+| GET `/api/scores/people?q=&status=&page=1&page_size=20` | 当前正式名单及成绩、historical_yiban_ids/qualified/settled/revision/pass_score；只读，最多100条/页，状态单独筛选 |
 | GET `/api/scores/batches/{id}/export.csv?kind=all` | 从持久审计导出 |
 | POST `/api/scores/batches/{id}/revert` | JSON `{ "confirm": true }`，整批受保护撤销 |
 | GET `/api/scores/issues?q=&kind=all&page=1&page_size=20` | 历次异常按有效学号汇总，含最高记录得分率、出现数、批次数和来源；每页最多100 |
@@ -237,6 +239,20 @@ JSON操作确认/范围开关严格为布尔值，索引/ID/版本严格为整�
 前端导入按analyze.fields识别时间能力；旧服务不支持或缺少fields元数据时，正常展示成绩映射，禁用可选时间控件、过滤时间映射，并提供普通兼容说明，不因缺时间功能阻止原成绩。换工作表/重识别表头及提交前都重新过滤，避免把旧服务不认识的字段发回去。有时间的新文件在旧服务上仍只导入成绩，页面明确说明本次不保存时间；要补时长再升级服务并提供报表。
 
 成绩工作簿v6和跟进v4包含时间；分班下载同时接受Workbook-Version=5、跟进接受Api-Version=3，正常下载旧格式并明确普通提示“不含答题时间”，不伪称有新列。缺版本或更旧的及格规则/接口仍保留原保护，以免导出错误的60分名单。仅想补齐旧记录时长才需重新上传含时间报表并确认；不能从未保存过时间的旧审计凭空恢复。
+
+### 5.6 异常定位、原始整行与当前人员查询
+
+能力：health 新增 `score_trace_api_version=1`、`score_people_api_version=1`，原 schema_version=2 不变，无新表或历史回填。新 analyze.fields 提供可选 `yiban_id`；前端按此能力启用映射，旧服务不发送不认识的字段，原成绩导入仍可继续。新增接口缺失只显示该组件的可读提示，不阻塞旧页面。
+
+`yiban_id` 为可靠清洗后的数字**文本**，`raw_yiban_id` 保存读取原值；不使用浮点转换、不丢前导零、不恢复已丢精度、科学计数法或任意字符中的数字。非法可选易班 ID 只记 notes，不改变成绩行处理类别；精确学号仍是唯一身份关系，账号不写入 students。
+
+新 `record_json.source_row` 包含 version=1、sheet_name/header_row/row_number/row_columns（CSV列数），columns 按原列顺序保存 index（0起始）、column（A/B/…）、label、value、text、number_format、formula、error。重复/空表头不折叠，CSV单元格的原始文本空白/换行保留；公式不执行，仅保留读取缓存值与标记，非有限值转明确文本。不留原文件二进制，不恢复Excel排版或公式表达式。未处理的空行/重复表头仍按原规则跳过。全部列快照属于本地持久审计，随原行一起受名单剔除清理；会增加存储与备份体积。旧预览/旧记录无这些键时继续按旧字段处理，不能凭空恢复未保存过的列。
+
+异常 summary 追加 yiban_ids/raw_yiban_ids；occurrences 追加 yiban_id/raw_yiban_id/notes/sheet_name/source_row_available，**不在每页重复返回所有源列**，点击展开再读取单行。q 增加原始/清洗后账号、批次名、文件名匹配，并兼容可可靠清洗的粘贴ID；不改变原按学号分组和最高分来源。汇总/出现导出在原列后追加账号等信息，不移动原有列，原始全部列通过单行查看，不塞进一个可能超出Excel单元格上限的JSON列。
+
+`/api/scores/people` 在一个 read_snapshot 中读取当前正式 students、成绩来源、revision，以及有精确在册学号的历史 yiban_id 检索提示。q 为字面包含匹配（大小写/全角归一化），支持学号、姓名、学院班级、专业及历史易班ID；从不因报表同名或账号同号合并身份。返回全部当前学生字段并追加 historical_yiban_ids、qualified（统一≥60）、settled（有效数值且非未开始/进行中）；分页有 total/pages，越界页收敛。名单外/已剔除人员不变成在册查询结果，未知状态筛选400、参数越界422。
+
+前端在异常“出现记录”和批次明细提供全宽原始行展开区域；当前人员组件在“异常人员”旁，和历史异常可互相带学号定位，关闭恢复到可见入口。七种登记状态、合格/结算/占位0、异常类型和批次处理含义统一说明；显示的是本地已存状态，绝非平台在线状态或自动异常处置认证。移动端人员状态改为纵向卡片，原异常表保留横向滚动，长内容只在弹窗内部滚动。筛选/刷新保留已有结果与输入，失败可重试，过期响应丢弃。
 
 ## 6. 扩展多考试时不要复用批次代替考试
 

@@ -1,6 +1,7 @@
 import {h,num,percent,date,duration,examTimeTitle,icon,pageHeading,blank,badge} from './components.js';
+import {recordTraceView} from './score_trace.js';
 
-export const scoreFields={student_id:'学号',name:'姓名（核对名单）',status:'状态',score_rate:'得分率',result_text:'成绩 / 百分比（备用）',college:'学院（核对名单）',class_name:'班级（核对名单）',exam_started_at:'开始时间（选填，L列）',exam_finished_at:'结束时间（选填，M列）'};
+export const scoreFields={student_id:'学号',name:'姓名（核对名单）',status:'状态',score_rate:'得分率',result_text:'成绩 / 百分比（备用）',college:'学院（核对名单）',class_name:'班级（核对名单）',exam_started_at:'开始时间（选填，L列）',exam_finished_at:'结束时间（选填，M列）',yiban_id:'易班 ID（选填，仅检索）'};
 const actions={update:'将更新',unchanged:'保持不变',protected:'保留原成绩',unmatched:'未匹配',invalid:'数据错误',name_conflict:'姓名冲突',duplicate:'重复已合并',duplicate_conflict:'重复冲突'};
 const tones={update:'success',unchanged:'neutral',protected:'pending',unmatched:'absent',invalid:'absent',name_conflict:'absent',duplicate:'neutral',duplicate_conflict:'absent'};
 const pill=(action)=>`<span class="badge ${tones[action]||'neutral'}">${h(actions[action]||action)}</span>`;
@@ -20,14 +21,14 @@ function uploadBox(G) {
 }
 function mapping(G) {
   const sh=G.upload.sheets[G.sheetIndex], disabled=G.busy?'disabled':'';
-  const timeSupported=G.upload.timeSupported!==false;
+  const timeSupported=G.upload.timeSupported!==false,yibanSupported=G.upload.yibanSupported!==false;
   const timeNote=timeSupported?'开始 / 结束时间均为选填。旧报表无需补列，没有完整时间时正常导入成绩，答题时长显示“—”。':'兼容旧版服务：成绩可以正常导入，本次不处理时间，答题时长显示“—”；如需保存文件里的时间，请升级服务后重新导入。';
   return `<div class="uploaded-file">${icon('file')}<div class="file-content"><div class="file-name">${h(G.upload.filename)}</div><div class="file-meta">${h(G.upload.format.encoding)} · ${h(G.upload.format.delimiter)} · 表头后 ${num(sh.rows)} 行</div></div><button class="icon-btn" data-action="score-reset" title="更换文件" ${disabled}>${icon('close')}</button></div>
     <div class="form-field batch-name-field"><label for="score-name">本次导入名称 <span>*</span></label><input id="score-name" maxlength="120" value="${h(G.name)}" placeholder="输入便于查找的导入名称" ${disabled}></div>
     <div class="form-row"><div class="form-field"><label for="score-sheet">选择工作表</label><select id="score-sheet" ${disabled}>${G.upload.sheets.map((s,i)=>`<option value="${i}" ${i===G.sheetIndex?'selected':''}>${h(s.name)} · ${num(s.rows)} 行</option>`).join('')}</select></div><div class="form-field header-field"><label for="score-header">表头所在行</label><input type="number" id="score-header" value="${h(G.headerDraft??G.headerRow)}" min="1" max="60000" ${disabled}></div><button class="btn secondary" data-action="score-header" ${disabled}>重新识别</button></div>
     <div class="section-caption">确认字段对应关系<span class="small-muted">按学号匹配，姓名与学院班级仅用于核对</span></div>
-    <div class="mapping score-mapping">${Object.entries(scoreFields).map(([key,label])=>`<div class="form-field"><label for="score-map-${key}">${h(label)} ${['student_id','status'].includes(key)?'<span>*</span>':''}</label><select id="score-map-${key}" data-score-map="${key}" ${G.busy||(!timeSupported&&['exam_started_at','exam_finished_at'].includes(key))?'disabled':''}><option value="">不使用此列</option>${sh.headers.map(c=>`<option value="${c.index}" ${G.mapping[key]===c.index?'selected':''}>${h(c.label)} · 第 ${c.index+1} 列</option>`).join('')}</select></div>`).join('')}</div>
-    <div class="info-box score-merge-rule">${icon('check')}<span>增量导入：未录入的成绩补入，已有成绩保留较高得分率；相同分数保留原记录，可补齐缺失答题时间。答题时长＝结束时间－开始时间（M－L），不使用系统评定时间。<br><span id="score-time-note">${h(timeNote)}</span></span></div>
+    <div class="mapping score-mapping">${Object.entries(scoreFields).map(([key,label])=>`<div class="form-field"><label for="score-map-${key}">${h(label)} ${['student_id','status'].includes(key)?'<span>*</span>':''}</label><select id="score-map-${key}" data-score-map="${key}" ${G.busy||(!timeSupported&&['exam_started_at','exam_finished_at'].includes(key))||(!yibanSupported&&key==='yiban_id')?'disabled':''}><option value="">不使用此列</option>${sh.headers.map(c=>`<option value="${c.index}" ${G.mapping[key]===c.index?'selected':''}>${h(c.label)} · 第 ${c.index+1} 列</option>`).join('')}</select></div>`).join('')}</div>
+    <div class="info-box score-merge-rule">${icon('check')}<span>增量导入：未录入的成绩补入，已有成绩保留较高得分率；相同分数保留原记录，可补齐缺失答题时间。答题时长＝结束时间－开始时间（M－L），不使用系统评定时间。<br><span id="score-time-note">${h(timeNote)}</span><br><span id="score-source-note">${yibanSupported?'易班 ID 只用于检索，不替代学号匹配。确认保存后，导入全部列将作为本地历史快照保留，请勿上传无关敏感列。':'兼容旧版服务：本次不保存易班 ID / 原始整行快照，原成绩导入仍可正常使用。'}</span></span></div>
     <details class="cleaning-settings"><summary>${icon('shield')}数值识别设置</summary><div class="settings-grid">
       <div class="form-field"><label for="score-scale">无百分号的数字</label><select id="score-scale" ${disabled}><option value="percent" ${G.scale==='percent'?'selected':''}>按 0–100：92 表示 92%（默认）</option><option value="fraction" ${G.scale==='fraction'?'selected':''}>按 0–1：0.92 表示 92%</option></select></div>
       <div class="form-field"><label for="score-zero">未开始 / 进行中的 0 分</label><select id="score-zero" ${disabled}><option value="null_unfinished" ${G.zeroPolicy==='null_unfinished'?'selected':''}>视为占位，正式得分率留空（推荐）</option><option value="keep" ${G.zeroPolicy==='keep'?'selected':''}>保留原表 0 分，统计仍排除未完成</option></select></div>
@@ -41,12 +42,12 @@ function comparison(row) {
   else if(['update','duplicate'].includes(row.action)) after=row.after?.score_rate;
   return `<span class="source-text">${percent(before)}</span><strong class="rate-value">→ ${percent(after)}</strong>`;
 }
-function previewTable(rows) {
+function previewTable(rows,batch=null) {
   return `<div class="table-scroll"><table class="cleaning-table"><thead><tr><th>行</th><th>原学号 → 清洗后</th><th>学生</th><th>本次状态</th><th>本次得分率</th><th>原有 → 合并后</th><th>本次答题时长</th><th>处理结果</th><th>核对说明</th></tr></thead><tbody>${rows.length?rows.map(r=>`<tr>
     <td class="row-index">${r.row_number}</td><td><div class="source-text mono">${h(r.raw_id)}</div><div class="mono strong">${h(r.student_id||'无法提取')}</div></td>
     <td><strong>${h(r.name||'—')}</strong><div class="cell-secondary">${h(r.class_name||'未在名单中匹配')}</div>${r.source_name&&r.source_name!==r.name?`<div class="cell-secondary">原姓名：${h(r.source_name)}</div>`:''}</td>
     <td>${r.status?badge(r.status):h(r.raw_status)}</td><td><span class="source-text">${h(r.raw_rate||r.raw_result||'空值')}</span><div class="rate-value">${percent(r.score_rate)}</div></td>
-    <td>${comparison(r)}</td><td class="duration-cell" title="${h(examTimeTitle(r))}"><strong>${duration(r.answer_duration_seconds)}</strong><div class="cell-secondary">合并后：${duration(['invalid','unmatched','name_conflict','duplicate_conflict'].includes(r.action)?null:r.after?.answer_duration_seconds)}</div></td><td>${pill(r.action)}</td><td class="cleaning-notes">${r.errors.length?`<div class="text-danger">${h(r.errors.join(' '))}</div>`:''}${r.notes.length?h(r.notes.join('；')):'无需额外清洗'}</td>
+    <td>${comparison(r)}</td><td class="duration-cell" title="${h(examTimeTitle(r))}"><strong>${duration(r.answer_duration_seconds)}</strong><div class="cell-secondary">合并后：${duration(['invalid','unmatched','name_conflict','duplicate_conflict'].includes(r.action)?null:r.after?.answer_duration_seconds)}</div></td><td>${pill(r.action)}</td><td class="cleaning-notes">${r.errors.length?`<div class="text-danger">${h(r.errors.join(' '))}</div>`:''}${r.notes.length?h(r.notes.join('；')):'无需额外清洗'}${batch?`<button class="btn secondary small audit-source-toggle" data-action="score-audit-source" data-row="${h(r.row_number)}" aria-controls="score-audit-source">展开原始行 · 第 ${h(r.row_number)} 行</button>`:''}</td>
   </tr>`).join(''):`<tr><td colspan="9">${blank('此分类暂无记录','当前筛选结果为空。')}</td></tr>`}</tbody></table></div>`;
 }
 function rowPager(total,page,actionPrefix) {
@@ -88,12 +89,13 @@ function history(G) {
   </section>`;
 }
 function audit(G) {
-  const A=G.audit;
-  return `<section class="score-audit" id="score-audit"><div class="card-header"><div><h2>批次 #${A.batch.id} · 导入明细</h2><p class="card-subtitle">${h(A.batch.name)} · ${A.batch.state==='reverted'?'已撤销，历史记录仍完整保留':'导入时的快照，不代表学生目前的值'}</p></div><button class="icon-btn" data-action="score-audit-close" title="关闭明细">${icon('close')}</button></div><div class="preview-toolbar"><div class="tabs">${[['all','全部记录'],['issues','异常记录']].map(([key,title])=>`<button class="tab ${A.kind===key?'active':''}" data-action="score-audit-tab" data-kind="${key}" ${G.busy?'disabled':''}>${title}</button>`).join('')}</div><a class="btn secondary small" href="/api/scores/batches/${A.batch.id}/export.csv?kind=${h(A.kind)}" download>${icon('download')}导出</a></div>${previewTable(A.items)}${rowPager(A.total,A.page,'score-audit')}</section>`;
+  const A=G.audit,source=A.items.find(row=>row.row_number===A.sourceRow);
+  const sourcePanel=source?`<section class="issue-source-panel" id="score-audit-source" tabindex="-1"><div class="source-panel-header"><h4>原表第 ${h(source.row_number)} 行</h4><button class="btn secondary small" data-action="score-audit-source-close">收起原始行</button></div>${recordTraceView({row:source,batch:A.batch})}</section>`:'';
+  return `<section class="score-audit" id="score-audit"><div class="card-header"><div><h2>批次 #${A.batch.id} · 导入明细</h2><p class="card-subtitle">${h(A.batch.name)} · ${A.batch.state==='reverted'?'已撤销，历史记录仍完整保留':'导入时的快照，不代表学生目前的值'}</p></div><button class="icon-btn" data-action="score-audit-close" title="关闭明细">${icon('close')}</button></div><div class="preview-toolbar"><div class="tabs">${[['all','全部记录'],['issues','异常记录']].map(([key,title])=>`<button class="tab ${A.kind===key?'active':''}" data-action="score-audit-tab" data-kind="${key}" ${G.busy?'disabled':''}>${title}</button>`).join('')}</div><a class="btn secondary small" href="/api/scores/batches/${A.batch.id}/export.csv?kind=${h(A.kind)}" download>${icon('download')}导出</a></div>${previewTable(A.items,A.batch)}${sourcePanel}${rowPager(A.total,A.page,'score-audit')}</section>`;
 }
 export function scoreImportView(S) {
   const G=S.score, stage=G.committed?3:G.preview?3:G.upload?2:1;
-  return pageHeading('SCORE IMPORT','导入成绩','按学号增量合并学生成绩，未录入的补入，已有的保留较高得分率。',`<button class="btn secondary" data-action="score-issues-open" ${G.busy?'disabled':''}>${icon('alert')}异常人员</button><a class="btn secondary" href="/static/templates/score_template.csv" download>${icon('download')}下载成绩模板</a><a class="btn secondary" href="#scores">${icon('chart')}查看成绩</a>`) + `<div class="score-import-workflow">
+  return pageHeading('SCORE IMPORT','导入成绩','按学号增量合并学生成绩，未录入的补入，已有的保留较高得分率。',`<button class="btn secondary" data-action="score-issues-open" ${G.busy?'disabled':''}>${icon('alert')}异常人员</button><button class="btn secondary" data-action="score-people-open" ${G.busy?'disabled':''}>${icon('search')}人员状态查询</button><a class="btn secondary" href="/static/templates/score_template.csv" download>${icon('download')}下载成绩模板</a><a class="btn secondary" href="#scores">${icon('chart')}查看成绩</a>`) + `<div class="score-import-workflow">
     ${G.committed?success(G):`<section class="card score-import-card">
       <div class="card-header"><div class="section-title">${icon('upload')}<h2>导入学生成绩</h2></div></div>
       <div class="steps">${['选择文件','识别与预览','确认入库'].map((title,i)=>`${i?'<span class="step-line"></span>':''}<div class="step ${stage===i+1?'active':stage>i+1?'done':''}"><span class="step-circle">${stage>i+1?icon('check'):i+1}</span><span>${title}</span></div>`).join('')}</div>

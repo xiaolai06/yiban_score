@@ -109,7 +109,12 @@ def test_standard_report_l_m_mapping_not_system_evaluation_column(client):
     assert s['exam_started_at'] == START and s['exam_finished_at'] == END and s['answer_duration_seconds'] == 773
     audit = client.get('/api/scores/batches/1/rows').json()['items'][0]
     assert audit['after']['answer_duration_seconds'] == 773
-    assert 'UNRELATED-ACCOUNT' not in str(audit)
+    # Full source rows are now explicitly retained for traceability, not copied
+    # into the formal student identity or used as a match key.
+    assert audit['source_row']['columns'][1]['value'] == 'UNRELATED-ACCOUNT'
+    assert audit['source_row']['columns'][2]['value'] == 'UNRELATED-ACCOUNT-ID'
+    assert not audit['yiban_id']  # Non-numeric account IDs are not guessed.
+    assert 'UNRELATED-ACCOUNT' not in str(s)
 
 
 def test_preview_commit_all_student_exports_and_summary_no_duration_statistics(client):

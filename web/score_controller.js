@@ -1,14 +1,17 @@
 import {newScoreState} from './score_views.js';
 import {installScoreIssues} from './score_issues.js';
+import {installScoreLookup} from './score_lookup.js';
 
 export function installScoreController(S,{api,render,toast,refreshBase}) {
   let rowSeq=0, auditSeq=0;
   const issues=installScoreIssues({api});
+  const lookup=installScoreLookup({api});
   const g=()=>S.score;
   const invalidate=()=>{g().preview=null;g().skip=false;g().error='';rowSeq++;};
   function compatibleMapping(mapping,upload=g().upload) {
     const result={...mapping};
     if(upload?.timeSupported===false){delete result.exam_started_at;delete result.exam_finished_at;}
+    if(upload?.yibanSupported===false)delete result.yiban_id;
     return result;
   }
   async function work(fn) {
@@ -38,6 +41,7 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
       const form=new FormData();form.append('file',file);
       const u=await api('/api/scores/analyze',{method:'POST',body:form});
       u.timeSupported=Boolean(u.fields?.exam_started_at&&u.fields?.exam_finished_at);
+      u.yibanSupported=Boolean(u.fields?.yiban_id);
       const sh=u.sheets[u.selected_sheet];
       Object.assign(g(),{upload:u,sheetIndex:u.selected_sheet,headerRow:sh.header_row,headerDraft:null,mapping:compatibleMapping(sh.mapping,u),name:file.name.replace(/\.[^.]+$/,'').slice(0,120)});
       toast(`已识别 ${u.format.encoding}，请核对列映射与清洗规则。`);
@@ -74,7 +78,7 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
           try{await Promise.all([refreshBase(),history()]);}
           catch(e){throw new Error(`成绩记录已保存，但列表刷新失败：${e.message}。请刷新后核对，勿重复导入。`);}
           const summary=result.batch.summary;
-          issues.refresh();
+          issues.refresh();lookup.refresh();
           toast(result.batch.options?.save_issues_only?`已保存 ${summary.issue_rows} 条异常记录，正式成绩未修改。`:`本次记录已保存：新增 ${summary.new_scores||0} 条，更新 ${result.batch.updated_count-(summary.new_scores||0)} 条。`);
           window.scrollTo({top:0,behavior:'smooth'});
         });return;
@@ -86,6 +90,8 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
         case 'score-history-next':await work(()=>history(G.batches.page+1));return;
         case 'score-audit':await work(()=>audit(Number(button.dataset.id)));document.getElementById('score-audit')?.scrollIntoView({behavior:'smooth'});return;
         case 'score-audit-close':G.audit=null;auditSeq++;render();return;
+        case 'score-audit-source':if(G.audit){G.audit.sourceRow=Number(button.dataset.row);render();const panel=document.getElementById('score-audit-source');panel?.scrollIntoView({block:'start'});panel?.focus({preventScroll:true});}return;
+        case 'score-audit-source-close':if(G.audit){G.audit.sourceRow=null;render();}return;
         case 'score-audit-tab':await work(()=>audit(G.audit.batch.id,button.dataset.kind,1));return;
         case 'score-audit-prev':await work(()=>audit(G.audit.batch.id,G.audit.kind,Math.max(1,G.audit.page-1)));return;
         case 'score-audit-next':await work(()=>audit(G.audit.batch.id,G.audit.kind,G.audit.page+1));return;
@@ -95,7 +101,7 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
           await work(async()=>{
             const result=await api(`/api/scores/batches/${id}/revert`,{method:'POST',body:JSON.stringify({confirm:true})});
             invalidate();G.committed=null;G.audit=null;
-            await Promise.all([refreshBase(),history(G.batches.page)]);issues.refresh();toast(`已撤销批次，恢复 ${result.reverted_count} 位学生。`);
+            await Promise.all([refreshBase(),history(G.batches.page)]);issues.refresh();lookup.refresh();toast(`已撤销批次，恢复 ${result.reverted_count} 位学生。`);
           });return;
         }
       }
@@ -108,7 +114,7 @@ export function installScoreController(S,{api,render,toast,refreshBase}) {
     if(t.id==='score-sheet'){
       G.sheetIndex=Number(t.value);const sh=G.upload.sheets[G.sheetIndex];G.headerRow=sh.header_row;G.headerDraft=null;G.mapping=compatibleMapping(sh.mapping);invalidate();render();return;
     }
-    if(t.dataset.scoreMap){if(G.upload?.timeSupported===false&&['exam_started_at','exam_finished_at'].includes(t.dataset.scoreMap))return;if(t.value==='')delete G.mapping[t.dataset.scoreMap];else G.mapping[t.dataset.scoreMap]=Number(t.value);invalidate();render();return;}
+    if(t.dataset.scoreMap){if(G.upload?.timeSupported===false&&['exam_started_at','exam_finished_at'].includes(t.dataset.scoreMap)||G.upload?.yibanSupported===false&&t.dataset.scoreMap==='yiban_id')return;if(t.value==='')delete G.mapping[t.dataset.scoreMap];else G.mapping[t.dataset.scoreMap]=Number(t.value);invalidate();render();return;}
     const map={'score-scale':'scale','score-zero':'zeroPolicy'};
     if(map[t.id]){G[map[t.id]]=t.value;invalidate();render();return;}
     if(t.id==='score-skip'){G.skip=t.checked;render();return;}

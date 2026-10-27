@@ -1,5 +1,6 @@
 @import url('./controls.css');
 @import url('./score_issues.css');
+@import url('./score_trace.css');
 @import url('./follow_up.css');
 /* 学绩 V2 — readable, high-contrast local workspace. No remote fonts or assets. */
 :root{--ink:#1b2b43;--muted:#4e6077;--subtle:#59677b;--line:#e0e7f0;--surface:#fff;--bg:#f4f7fb;--primary:#365dc5;--primary-dark:#2548a7;--primary-soft:#eaf0ff;--success:#067452;--warning:#975514;--danger:#b42335;--radius:18px;--shadow:0 4px 20px #20325506;--sidebar-width:208px}

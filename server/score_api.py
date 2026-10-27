@@ -28,6 +28,7 @@ from .score_import import (
     score_sheet_info,
 )
 from .score_issues import install_issue_routes
+from .score_lookup import install_lookup_routes
 from .staging import cleanup_upload, read_upload_bytes
 
 ISSUES = {'unmatched', 'invalid', 'name_conflict', 'duplicate_conflict'}
@@ -74,6 +75,7 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                          clean_expired, csv_response, safe_csv):
     max_upload = 20 * 1024 * 1024
     install_issue_routes(app, db_path, csv_response, safe_csv, saved_record)
+    install_lookup_routes(app, db_path, saved_record)
 
     def read_source(token):
         meta = read_stage(token, '.score-upload.json')
@@ -101,7 +103,7 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                          '原学院', '原班级', '原状态', '原得分率', '原成绩/百分比', '清洗后状态',
                          '清洗后得分率(%)', '处理结果', '清洗说明', '异常说明', '导入前得分率(%)', '合并后得分率(%)',
                          '原开始时间', '原结束时间', '清洗后开始时间', '清洗后结束时间', '本次答题时长',
-                         '导入前答题时长', '合并后答题时长'])
+                         '导入前答题时长', '合并后答题时长', '原易班ID', '清洗后易班ID'])
         for r in rows:
             before = r.get('before') or {}
             after = r.get('after') or {}
@@ -118,7 +120,8 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                       after.get('score_rate') if after.get('score_rate') is not None else '',
                       r.get('raw_started_at', ''), r.get('raw_finished_at', ''),
                       r.get('exam_started_at'), r.get('exam_finished_at'), format_duration(r.get('answer_duration_seconds')),
-                      format_duration(before.get('answer_duration_seconds')), format_duration(after.get('answer_duration_seconds'))]
+                      format_duration(before.get('answer_duration_seconds')), format_duration(after.get('answer_duration_seconds')),
+                      r.get('raw_yiban_id', ''), r.get('yiban_id', '')]
             writer.writerow([safe_csv(value) for value in values])
         return csv_response(out.getvalue(), filename)
 
@@ -289,6 +292,18 @@ def install_score_routes(app, db_path, stage, read_stage, stage_path, write_stag
                                params + (page_size, (page - 1) * page_size))
             return {'batch': public_batch(batch), 'items': [saved_record(row[0]) for row in rows],
                     'total': total, 'page': page, 'page_size': page_size}
+
+    @app.get('/api/scores/batches/{batch_id}/rows/{row_number}')
+    def batch_source_row(batch_id: int, row_number: int):
+        if batch_id < 1 or row_number < 1:
+            raise HTTPException(422, '批次号和原表行号必须为正整数。')
+        with connection(db_path) as con, read_snapshot(con):
+            batch = con.execute('SELECT * FROM score_batches WHERE id=?', (batch_id,)).fetchone()
+            row = con.execute('SELECT record_json FROM score_import_rows WHERE batch_id=? AND row_number=?',
+                              (batch_id, row_number)).fetchone()
+            if batch is None or row is None:
+                raise HTTPException(404, '该批次原表行不存在或已被剔除清理，请刷新记录。')
+            return {'batch': public_batch(batch), 'row': saved_record(row[0])}
 
     @app.get('/api/scores/batches/{batch_id}/export.csv')
     def export_batch(batch_id: int, kind: str = 'all'):
