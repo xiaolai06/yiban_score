@@ -98,6 +98,8 @@ systemctl status student-score --no-pager
 
 ## 6. 日后更新与备份
 
+如需“其他页面公开、导入需要密码”，启用 [导入密码配置](../docs/IMPORT_PASSWORD.md)。此模式在应用内保护两个导入入口及相应写入接口，不需要给整个网站设置 Nginx 登录。
+
 **在服务器终端执行**：
 
 ```bash

@@ -45,6 +45,7 @@ from .grade_rules import (
     VALID_SCORE_SQL,
     round_score,
 )
+from .import_access import ImportAccess, install_access_routes, protected_import_path
 from .request_limits import RequestBodyLimit
 from .roster import FIELDS, REQUIRED, STATUSES, sheet_info, validate_rows
 from .score_export import build_score_workbook
@@ -170,6 +171,8 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                   docs_url=None, redoc_url=None, openapi_url='/api/openapi.json')
     app.state.db_path = db_path
     app.state.public_host = public_host
+    import_access = ImportAccess(os.environ.get('STUDENT_IMPORT_AUTH_FILE'), secure=bool(public_host))
+    app.state.import_access = import_access
     app.add_middleware(RequestBodyLimit, max_bytes=MAX_UPLOAD+1024*1024)
 
     @app.middleware('http')
@@ -192,6 +195,10 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
                 return JSONResponse({'detail': '拒绝跨站写入请求。'}, status_code=403)
             if request.headers.get('x-requested-with') != 'StudentScore':
                 return JSONResponse({'detail': '写入请求缺少应用标记。'}, status_code=403)
+        if protected_import_path(request.url.path, request.method) and not import_access.authorized(request):
+            return JSONResponse({'detail': '请先输入导入密码，再进行名单或成绩导入。',
+                                 'code': 'import_locked'}, status_code=401,
+                                headers={'Cache-Control': 'no-store'})
         response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'no-referrer'
@@ -664,6 +671,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
     from .follow_up import install_follow_up_routes
     install_follow_up_routes(app, db_path, csv_response, safe_csv)
 
+    install_access_routes(app, import_access)
     app.mount('/static', StaticFiles(directory=ROOT / 'web'), name='static')
     return app
 

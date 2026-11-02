@@ -11,6 +11,7 @@ import {loadOverviewStats} from './overview_stats.js';
 import {completeDirectoryStatistics} from './directory_stats.js';
 import {readBaseSnapshot} from './read_snapshots.js';
 import {PASS_SCORE} from './grade_values.js';
+import {importLocked, isImportView} from './import_access.js';
 
 const emptyStats = {students:0,colleges:0,classes:0,recorded:0,completed:null,qualified:null,average_rate:null,statuses:[],colleges_detail:[]};
 const emptyList = {items:[],total:0,recorded:0,qualified:null,below_60:null,at_60:null,settled:0,average_rate:null,page:1,page_size:10,pages:1};
@@ -28,6 +29,7 @@ const S = {
   exportStudents:new Set(),exportAllStudents:false,exportExcludedStudents:new Set(),exportStudentFilter:null,selectedStudentTotal:0,
   directoryOutdated:false,directoryStatsRecovered:false,directoryStatsError:'',treeSort:{key:'name',order:'asc'},
   overviewSort:{key:'students',order:'desc'},overviewError:'',
+  importAccess:{enabled:false,unlocked:true},importAccessBusy:false,importAccessError:'',
 };
 let toastTimer, searchTimer, treeTimer, listSequence=0,baseSequence=0,bootSequence=0;
 let renderedView=null,listAbort=null;
@@ -49,6 +51,11 @@ async function api(path, options={}) {
   try { payload = await response.json(); }
   catch(error) {if(error.name==='AbortError')throw error;throw new Error('服务返回了无法识别的响应，请检查启动窗口。');}
   if (!response.ok) {
+    if(payload.code==='import_locked'){
+      clearImportAccess();
+      S.importAccessError='导入验证已失效，请重新输入密码。';
+      render();
+    }
     const detail=payload.detail;
     const message=Array.isArray(detail)?detail.map(x=>`${x.loc?.slice(1).join('.') || '参数'}：${x.msg}`).join('；'):detail;
     throw new Error(message || `请求失败（HTTP ${response.status}）`);
@@ -108,6 +115,7 @@ function render() {
   restoreControl(controlSnapshot);
 }
 async function refreshBase({includeHistory=true}={}) {
+  includeHistory=includeHistory&&!importLocked(S);
   const seq=++baseSequence;
   const snapshot=await readBaseSnapshot(api,{includeHistory,isCurrent:()=>seq===baseSequence});
   if(!snapshot)return;
@@ -131,11 +139,15 @@ async function refreshBase({includeHistory=true}={}) {
 async function initialize() {
   const seq=++bootSequence;
   try {
+    S.importAccess=await api('/api/import-access');
+    if(S.importAccess.enabled&&!location.hash){
+      S.view='overview';history.replaceState(null,'','#overview');
+    }
     const [health]=await Promise.all([api('/api/health'),refreshBase()]);
     if(seq!==bootSequence)return;
     S.health=health;
     S.directoryOutdated=Number(S.health.directory_api_version||0)<6;
-    if(S.view==='score-import')await scoreController.history();
+    if(S.view==='score-import'&&!importLocked(S))await scoreController.history();
     S.ready=true;
     render();
     if (S.view==='scores') await loadStudents();
@@ -151,17 +163,60 @@ async function changeView() {
     key='scores';
   }
   if (!['import','score-import','scores','overview','help'].includes(key)) return;
+  if(isImportView(key)&&S.ready){
+    try {
+      const hash=location.hash;
+      const access=await api('/api/import-access');
+      if(location.hash!==hash)return;
+      if(access.enabled&&!access.unlocked)clearImportAccess();
+      S.importAccess=access;
+    } catch(error){
+      S.importAccess={enabled:true,unlocked:false};
+      S.importAccessError='无法核对导入权限，请稍后重试。';
+    }
+  }
   S.view=key;
   if(!S.ready)return;
   render();
   if (key==='scores') await loadStudents();
-  else if (key==='score-import') {
+  else if (key==='score-import'&&!importLocked(S)) {
     try {await Promise.all([refreshBase(),scoreController.history()]);if(S.view===key)render();} catch(e) {toast(e.message,true);}
   }
   else if (key==='overview') {
     try {await refreshBase({includeHistory:false});if(S.view===key)render();} catch(e) {toast(e.message,true);}
   }
 }
+function clearImportAccess(){
+  S.importAccess={enabled:true,unlocked:false};
+  Object.assign(S,{upload:null,preview:null,committed:null,history:[],mapping:{},importError:'',allowNames:false,
+    sheetIndex:0,headerRow:1,headerDraft:null,rosterOperation:'import'});
+  Object.assign(S.score,newScoreState());
+  Object.assign(S.removal,newRemovalState());
+}
+async function unlockImportAccess(form){
+  if(S.importAccessBusy||!form.reportValidity())return;
+  const password=form.elements.password.value;
+  form.elements.password.value='';
+  S.importAccessBusy=true;S.importAccessError='';render();
+  try{
+    const access=await api('/api/import-access/unlock',{method:'POST',body:JSON.stringify({password})});
+    clearImportAccess();S.importAccess=access;
+    await refreshBase();
+    if(S.view==='score-import')await scoreController.history();
+  }catch(error){S.importAccessError=error.message;}
+  finally{
+    S.importAccessBusy=false;render();
+    document.getElementById('import-access-password')?.focus({preventScroll:true});
+  }
+}
+async function lockImportAccess(){
+  if(S.busy||S.score.busy||S.removal.busy||S.importAccessBusy)return;
+  await api('/api/import-access/lock',{method:'POST'});
+  clearImportAccess();S.importAccessError='';render();
+}
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&S.ready&&isImportView(S.view))changeView();
+});
 function gotoScores(college=null,classId=null) {
   if (college!==null) {
     directoryController.clearStudentSelection();
@@ -337,6 +392,7 @@ document.addEventListener('click',async event=>{
   try {
     switch(action) {
       case 'retry': await initialize(); break;
+      case 'lock-import-access': await lockImportAccess(); break;
       case 'choose-file': document.getElementById('file-input')?.click(); break;
       case 'reset-import': resetImport(); break;
       case 'apply-header': await inspectHeader(); break;
@@ -438,6 +494,7 @@ document.addEventListener('input',event=>{
   if(input.id==='header-row'){S.headerDraft=input.value;if(S.preview){S.preview=null;render();}}
 });
 document.addEventListener('submit',event=>{
+  if(event.target.id==='import-access-form'){event.preventDefault();unlockImportAccess(event.target);return;}
   if(event.target.id==='student-edit-form'){event.preventDefault();saveStudent(event.target);}
   if(event.target.id==='page-jump-form'){
     event.preventDefault();

@@ -2,6 +2,7 @@ import {removalView,rosterOperationTabs} from './roster_removal.js';
 import {scoreImportView} from './score_views.js';
 import {selectedStudentCount,studentIsChecked,DIRECTORY_UPDATE_MESSAGE} from './directory_controller.js';
 import {hasNumericScore} from './grade_values.js';
+import {importAccessToolbar, importAccessView, importLocked, isImportView} from './import_access.js';
 import {statuses, h, num, percent, date, duration, examTimeTitle, icon, badge, metrics, pageHeading, templateLink, blank} from './components.js';
 const fields = {student_id:'学号',name:'姓名',gender:'性别',college:'学院 / 院系',major:'专业',class_name:'班级',status:'状态',score_rate:'得分率'};
 const required = ['student_id','name','college','class_name'];
@@ -11,15 +12,16 @@ export function shell(S) {
   const entries = [['import','upload','名单导入'],['score-import','file','导入成绩'],['scores','chart','成绩明细'],['overview','layers','数据总览']];
   return `<div class="layout">
     <aside class="sidebar">
-      <a class="brand" href="#import" aria-label="学绩首页"><div class="brand-mark">${icon('cap')}</div><div class="brand-text"><div class="brand-name">学绩</div><div class="brand-sub">学生成绩管理</div></div></a>
+      <a class="brand" href="${S.importAccess?.enabled?'#overview':'#import'}" aria-label="学绩首页"><div class="brand-mark">${icon('cap')}</div><div class="brand-text"><div class="brand-name">学绩</div><div class="brand-sub">学生成绩管理</div></div></a>
       <nav class="navigation" aria-label="主导航">${entries.map(([key,i,label])=>`<a class="nav-link ${S.view===key?'active':''}" href="#${key}" data-nav="${key}" title="${label}" ${S.view===key?'aria-current="page"':''}>${icon(i)}<span class="nav-text">${label}</span></a>`).join('')}</nav>
     </aside>
     <div class="workspace"><main class="main ${S.view==='scores'?'score-main':''}" id="main" tabindex="-1">${renderView(S)}</main></div>
   </div>`;
 }
 export function renderView(S) {
+  if(isImportView(S.view)&&importLocked(S))return importAccessView(S);
   const content = ({import:importView,'score-import':scoreImportView,scores:scoresView,overview:overviewView,help:helpView})[S.view] || importView;
-  return content(S);
+  return (isImportView(S.view)?importAccessToolbar(S):'')+content(S);
 }
 function historyCard(S) {
   return `<section class="card history"><div class="card-header"><div class="section-title">${icon('clock')}<h2>最近导入记录</h2></div><span class="small-muted">保留最近 50 批，当前显示 ${Math.min(S.history.length,5)} 批</span></div>${S.history.length?`<div class="table-scroll"><table><thead><tr><th>导入文件</th><th>导入时间</th><th>新增</th><th>更新 / 无变化</th><th>结果</th></tr></thead><tbody>${S.history.slice(0,5).map(b=>`<tr><td><div class="file-inline" title="${h(b.filename)}">${icon('file')}<span>${h(b.filename)}</span></div></td><td>${h(date(b.created_at))}</td><td class="text-success">+${num(b.new_count)}</td><td>${num(b.updated_count)} / ${num(b.unchanged_count+b.skipped_count)}</td><td><span class="badge success">${icon('check')}入库完成</span></td></tr>`).join('')}</tbody></table></div>`:blank('还没有导入记录','上传第一份学生名单，开始建立你的数据工作台。')}</section>`;
