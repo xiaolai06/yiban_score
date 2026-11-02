@@ -27,6 +27,10 @@ def unlock(client, password=PASSWORD):
 def test_locked_apis_cannot_upload_preview_commit_remove_or_revert(locked_app):
     with TestClient(locked_app) as client:
         assert client.get('/api/import-access').json() == {'enabled': True, 'unlocked': False}
+        assert 'app.js?v=import-access-1' in client.get('/').text
+        static = client.get('/static/app.js')
+        assert static.headers['cache-control'] == 'no-cache'
+        assert 'views.js?v=import-access-1' in static.text
         for path in ['/api/imports/analyze', '/api/imports/preview', '/api/imports/commit',
                      '/api/scores/analyze', '/api/scores/preview', '/api/scores/commit',
                      '/api/removals/preview', '/api/removals/commit', '/api/scores/batches/1/revert']:

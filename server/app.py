@@ -209,6 +209,8 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
         if request.url.path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
+        elif request.url.path.startswith('/static/'):
+            response.headers['Cache-Control'] = 'no-cache'
         return response
 
     @app.exception_handler(WorkbookError)

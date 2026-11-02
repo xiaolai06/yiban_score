@@ -4,7 +4,7 @@ import {newScoreState} from './score_views.js';
 import {installScoreController} from './score_controller.js';
 import {h, icon} from './components.js';
 import {mountHTML, updateHTML} from './safe_dom.js';
-import {shell, renderView, editDialog} from './views.js';
+import {shell, renderView, editDialog} from './views.js?v=import-access-1';
 import {enhanceControls, closeControl, captureControl, restoreControl} from './custom_controls.js';
 import {installDirectoryController, DIRECTORY_UPDATE_MESSAGE} from './directory_controller.js';
 import {loadOverviewStats} from './overview_stats.js';
