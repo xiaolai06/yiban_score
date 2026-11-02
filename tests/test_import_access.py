@@ -27,10 +27,11 @@ def unlock(client, password=PASSWORD):
 def test_locked_apis_cannot_upload_preview_commit_remove_or_revert(locked_app):
     with TestClient(locked_app) as client:
         assert client.get('/api/import-access').json() == {'enabled': True, 'unlocked': False}
-        assert 'app.js?v=import-access-1' in client.get('/').text
+        assert 'app.js?v=edit-access-2' in client.get('/').text
         static = client.get('/static/app.js')
         assert static.headers['cache-control'] == 'no-cache'
-        assert 'views.js?v=import-access-1' in static.text
+        assert 'views.js?v=edit-access-2' in static.text
+        assert 'import_access.js?v=edit-access-2' in static.text
         for path in ['/api/imports/analyze', '/api/imports/preview', '/api/imports/commit',
                      '/api/scores/analyze', '/api/scores/preview', '/api/scores/commit',
                      '/api/removals/preview', '/api/removals/commit', '/api/scores/batches/1/revert']:
@@ -38,6 +39,7 @@ def test_locked_apis_cannot_upload_preview_commit_remove_or_revert(locked_app):
             assert response.status_code == 401, (path, response.text)
             assert response.json()['code'] == 'import_locked'
             assert response.headers['cache-control'] == 'no-store'
+        assert client.patch('/api/students/0001', headers=WRITE, json={}).status_code == 401
         for path in ['/api/imports', '/api/imports/fake/sheet', '/api/removals',
                      '/api/scores/uploads/fake/sheet', '/api/scores/previews/fake/rows',
                      '/api/scores/previews/fake/export.csv', '/api/imports/analyze/']:
@@ -100,6 +102,28 @@ def test_rate_limits_wrong_password_and_requires_write_marker(locked_app):
         assert response.status_code == 429
         assert response.headers['retry-after'] == '300'
         assert client.get('/api/students').status_code == 200
+
+
+def test_edit_and_import_share_one_session_and_logout_protects_both(locked_app):
+    with TestClient(locked_app) as client:
+        assert unlock(client).status_code == 200
+        add(client, [row('0001', name='合成编辑学生', rate=60, status='已完成')])
+        original = client.get('/api/students/0001').json()
+        body = {'version': original['version'], 'status': '已完成', 'score_rate': 88.5}
+        client.post('/api/import-access/lock', headers=WRITE)
+        assert client.get('/api/students/0001').status_code == 200
+        assert client.patch('/api/students/0001', headers=WRITE, json=body).status_code == 401
+        assert client.get('/api/students/0001').json() == original
+        assert unlock(client).status_code == 200
+        assert client.patch('/api/students/0001', headers=WRITE, json=body).status_code == 200
+        assert client.get('/api/imports').status_code == 200
+        saved = client.get('/api/students/0001').json()
+        assert saved['score_rate'] == 88.5
+        for key in locked_app.state.import_access.sessions:
+            locked_app.state.import_access.sessions[key] = 0
+        body.update(version=saved['version'], score_rate=100)
+        assert client.patch('/api/students/0001', headers=WRITE, json=body).status_code == 401
+        assert client.get('/api/students/0001').json() == saved
 
 
 def test_https_cookie_is_secure_and_invalid_config_fails_closed(tmp_path, monkeypatch):

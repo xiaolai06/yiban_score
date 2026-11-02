@@ -196,7 +196,7 @@ def create_app(db_path: str | Path | None = None, *, testing: bool = False,
             if request.headers.get('x-requested-with') != 'StudentScore':
                 return JSONResponse({'detail': '写入请求缺少应用标记。'}, status_code=403)
         if protected_import_path(request.url.path, request.method) and not import_access.authorized(request):
-            return JSONResponse({'detail': '请先输入导入密码，再进行名单或成绩导入。',
+            return JSONResponse({'detail': '请先输入操作密码，再进行导入、编辑或剔除。',
                                  'code': 'import_locked'}, status_code=401,
                                 headers={'Cache-Control': 'no-store'})
         response = await call_next(request)

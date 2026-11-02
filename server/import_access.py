@@ -38,6 +38,8 @@ def hash_parts(value):
 
 def protected_import_path(path: str, method: str) -> bool:
     path = path.rstrip('/')
+    if path.startswith('/api/students/') and method in {'PATCH', 'PUT', 'DELETE'}:
+        return True
     if path == '/api/imports' or path.startswith('/api/imports/'):
         return True
     if path == '/api/removals' or path.startswith('/api/removals/'):
@@ -111,7 +113,7 @@ class ImportAccess:
         rounds, salt, digest = self.parts
         actual = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, rounds)
         if not hmac.compare_digest(actual, digest):
-            raise HTTPException(401, '导入密码不正确，请重新输入。')
+            raise HTTPException(401, '操作密码不正确，请重新输入。')
         token = secrets.token_urlsafe(32)
         key = hashlib.sha256(token.encode()).hexdigest()
         with self.lock:

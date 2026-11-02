@@ -9,4 +9,7 @@
 .import-access-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;color:var(--muted);font-size:13px}
 .import-access-toolbar>span{display:inline-flex;align-items:center;gap:7px}
 .import-access-toolbar .btn{flex-shrink:0}
+#edit-access-dialog{width:min(480px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto}
+#edit-access-dialog .dialog-body>.small-muted{margin:0 0 24px}
+#edit-access-dialog input{width:100%;min-width:0}
 @media(max-width:600px){.import-access-card{margin:24px auto;padding:24px 20px}.import-access-toolbar{align-items:flex-start;flex-wrap:wrap}}

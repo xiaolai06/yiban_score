@@ -4,14 +4,14 @@ import {newScoreState} from './score_views.js';
 import {installScoreController} from './score_controller.js';
 import {h, icon} from './components.js';
 import {mountHTML, updateHTML} from './safe_dom.js';
-import {shell, renderView, editDialog} from './views.js?v=import-access-1';
+import {shell, renderView, editDialog} from './views.js?v=edit-access-2';
 import {enhanceControls, closeControl, captureControl, restoreControl} from './custom_controls.js';
 import {installDirectoryController, DIRECTORY_UPDATE_MESSAGE} from './directory_controller.js';
 import {loadOverviewStats} from './overview_stats.js';
 import {completeDirectoryStatistics} from './directory_stats.js';
 import {readBaseSnapshot} from './read_snapshots.js';
 import {PASS_SCORE} from './grade_values.js';
-import {importLocked, isImportView} from './import_access.js';
+import {editAccessDialog, importLocked, isImportView} from './import_access.js?v=edit-access-2';
 
 const emptyStats = {students:0,colleges:0,classes:0,recorded:0,completed:null,qualified:null,average_rate:null,statuses:[],colleges_detail:[]};
 const emptyList = {items:[],total:0,recorded:0,qualified:null,below_60:null,at_60:null,settled:0,average_rate:null,page:1,page_size:10,pages:1};
@@ -33,6 +33,7 @@ const S = {
 };
 let toastTimer, searchTimer, treeTimer, listSequence=0,baseSequence=0,bootSequence=0;
 let renderedView=null,listAbort=null;
+let editSequence=0,editAccessResolve=null;
 const studentCache=new Map();
 const CACHE_TTL=15000;
 
@@ -53,12 +54,13 @@ async function api(path, options={}) {
   if (!response.ok) {
     if(payload.code==='import_locked'){
       clearImportAccess();
-      S.importAccessError='导入验证已失效，请重新输入密码。';
+      S.importAccessError='操作验证已失效，请重新输入密码。';
       render();
     }
     const detail=payload.detail;
     const message=Array.isArray(detail)?detail.map(x=>`${x.loc?.slice(1).join('.') || '参数'}：${x.msg}`).join('；'):detail;
-    throw new Error(message || `请求失败（HTTP ${response.status}）`);
+    const error=new Error(message || `请求失败（HTTP ${response.status}）`);
+    error.code=payload.code;error.status=response.status;throw error;
   }
   return payload;
 }
@@ -163,6 +165,10 @@ async function changeView() {
     key='scores';
   }
   if (!['import','score-import','scores','overview','help'].includes(key)) return;
+  if(key!=='scores'){
+    editSequence++;finishEditAccess(false);
+    document.getElementById('student-dialog')?.close();S.editing=null;
+  }
   if(isImportView(key)&&S.ready){
     try {
       const hash=location.hash;
@@ -179,6 +185,9 @@ async function changeView() {
   if(!S.ready)return;
   render();
   if (key==='scores') await loadStudents();
+  else if (key==='import'&&!importLocked(S)) {
+    try{S.history=(await api('/api/imports')).items;if(S.view===key)render();}catch(e){toast(e.message,true);}
+  }
   else if (key==='score-import'&&!importLocked(S)) {
     try {await Promise.all([refreshBase(),scoreController.history()]);if(S.view===key)render();} catch(e) {toast(e.message,true);}
   }
@@ -196,23 +205,52 @@ function clearImportAccess(){
 async function unlockImportAccess(form){
   if(S.importAccessBusy||!form.reportValidity())return;
   const password=form.elements.password.value;
+  const inDialog=form.id==='edit-access-form';
+  const continuation=editAccessResolve;
   form.elements.password.value='';
-  S.importAccessBusy=true;S.importAccessError='';render();
+  S.importAccessBusy=true;S.importAccessError='';
+  if(inDialog)renderEditAccess();else render();
   try{
     const access=await api('/api/import-access/unlock',{method:'POST',body:JSON.stringify({password})});
+    if(inDialog&&editAccessResolve!==continuation)return;
     clearImportAccess();S.importAccess=access;
+    if(inDialog){finishEditAccess(true);return;}
     await refreshBase();
     if(S.view==='score-import')await scoreController.history();
   }catch(error){S.importAccessError=error.message;}
   finally{
     S.importAccessBusy=false;render();
-    document.getElementById('import-access-password')?.focus({preventScroll:true});
+    if(inDialog){if(editAccessResolve===continuation)renderEditAccess();}
+    else document.getElementById('import-access-password')?.focus({preventScroll:true});
   }
 }
 async function lockImportAccess(){
-  if(S.busy||S.score.busy||S.removal.busy||S.importAccessBusy)return;
+  if(S.busy||S.score.busy||S.removal.busy||S.importAccessBusy||S.saving)return;
   await api('/api/import-access/lock',{method:'POST'});
   clearImportAccess();S.importAccessError='';render();
+}
+function renderEditAccess(){
+  const dialog=document.getElementById('edit-access-dialog');
+  mountHTML(dialog,editAccessDialog(S));
+  if(!S.importAccessBusy)document.getElementById('edit-access-password')?.focus({preventScroll:true});
+}
+function finishEditAccess(allowed){
+  const resolve=editAccessResolve;editAccessResolve=null;
+  document.getElementById('edit-access-dialog')?.close();
+  resolve?.(allowed);
+}
+async function requireEditAccess(isCurrent){
+  const access=await api('/api/import-access');
+  if(!isCurrent())return false;
+  if(access.enabled&&!access.unlocked)clearImportAccess();
+  S.importAccess=access;
+  render();
+  if(!importLocked(S))return true;
+  return new Promise(resolve=>{
+    finishEditAccess(false);editAccessResolve=resolve;S.importAccessError='';
+    renderEditAccess();document.getElementById('edit-access-dialog').showModal();
+    document.getElementById('edit-access-password').focus();
+  });
 }
 document.addEventListener('visibilitychange',()=>{
   if(!document.hidden&&S.ready&&isImportView(S.view))changeView();
@@ -347,8 +385,12 @@ async function loadStudents({refresh=false}={}) {
   }
 }
 async function openStudent(studentId) {
+  const seq=++editSequence;
+  const isCurrent=()=>seq===editSequence&&S.view==='scores';
   try {
+    if(!await requireEditAccess(isCurrent)||!isCurrent())return;
     const student=await api(`/api/students/${encodeURIComponent(studentId)}`);
+    if(!isCurrent())return;
     S.editing=student;
     const dialog=document.getElementById('student-dialog');
     mountHTML(dialog,editDialog(student));
@@ -361,6 +403,7 @@ async function saveStudent(form) {
   const text=document.getElementById('edit-rate').value.trim();
   const score=text===''?null:Number(text);
   const status=document.getElementById('edit-status').value;
+  const student=S.editing;
   if (score!==null&&(!Number.isFinite(score)||score<0||score>100)) {
     document.getElementById('edit-error').textContent='得分率必须为 0–100 的数值。';return;
   }
@@ -368,7 +411,16 @@ async function saveStudent(form) {
   let persisted=false;
   const submit=document.getElementById('save-student');submit.disabled=true;submit.textContent='正在保存…';
   try {
-    await api(`/api/students/${encodeURIComponent(S.editing.student_id)}`,{method:'PATCH',body:JSON.stringify({version:S.editing.version,status,score_rate:score})});
+    const isCurrent=()=>S.view==='scores'&&S.editing===student&&form.isConnected;
+    if(!await requireEditAccess(isCurrent)||!isCurrent())return;
+    const save=()=>api(`/api/students/${encodeURIComponent(student.student_id)}`,{method:'PATCH',body:JSON.stringify({version:student.version,status,score_rate:score})});
+    try{await save();}catch(error){
+      // If the session expires between the check and save, retain the draft and
+      // verify again once. The original record version still protects conflicts.
+      if(error.code!=='import_locked')throw error;
+      if(!await requireEditAccess(isCurrent)||!isCurrent())return;
+      await save();
+    }
     persisted=true;
     document.getElementById('student-dialog').close();S.editing=null;
     directoryController.clearStudentSelection();
@@ -380,6 +432,7 @@ async function saveStudent(form) {
   } finally {
     S.saving=false;
     if(submit.isConnected){submit.disabled=false;mountHTML(submit,icon('check')+'保存修改');}
+    if(S.view==='scores')render();
   }
 }
 
@@ -393,6 +446,7 @@ document.addEventListener('click',async event=>{
     switch(action) {
       case 'retry': await initialize(); break;
       case 'lock-import-access': await lockImportAccess(); break;
+      case 'cancel-edit-access': if(!S.importAccessBusy)finishEditAccess(false);break;
       case 'choose-file': document.getElementById('file-input')?.click(); break;
       case 'reset-import': resetImport(); break;
       case 'apply-header': await inspectHeader(); break;
@@ -494,7 +548,7 @@ document.addEventListener('input',event=>{
   if(input.id==='header-row'){S.headerDraft=input.value;if(S.preview){S.preview=null;render();}}
 });
 document.addEventListener('submit',event=>{
-  if(event.target.id==='import-access-form'){event.preventDefault();unlockImportAccess(event.target);return;}
+  if(['import-access-form','edit-access-form'].includes(event.target.id)){event.preventDefault();unlockImportAccess(event.target);return;}
   if(event.target.id==='student-edit-form'){event.preventDefault();saveStudent(event.target);}
   if(event.target.id==='page-jump-form'){
     event.preventDefault();
@@ -518,6 +572,9 @@ document.addEventListener('drop',event=>{
   upload(files[0]);
 });
 const dialog=document.getElementById('student-dialog');
+const editAccess=document.getElementById('edit-access-dialog');
+editAccess.addEventListener('cancel',event=>{event.preventDefault();if(!S.importAccessBusy)finishEditAccess(false);});
+editAccess.addEventListener('click',event=>{if(event.target===editAccess&&!S.importAccessBusy)finishEditAccess(false);});
 dialog.addEventListener('click',event=>{if(event.target===dialog&&!S.saving){closeControl();dialog.close();S.editing=null;}});
 dialog.addEventListener('cancel',event=>{if(S.saving)event.preventDefault();else closeControl();});
 const directoryController=installDirectoryController(S,{render,loadStudents,toast});
